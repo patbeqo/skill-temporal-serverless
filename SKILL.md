@@ -45,10 +45,43 @@ Most real questions require 2-3 reference files:
 - **"My serverless worker isn't picking up tasks"** → `troubleshooting.md` (diagnostic tree) + `concepts.md` (invocation flow) + `aws-lambda-deployment.md` (IAM and deployment version verification).
 - **"Add observability to my Lambda worker"** → `observability.md` (ADOT layers, OTel config) + `sdk-configuration.md` (SDK-specific config callback for tracing).
 - **"What are the Lambda-tuned defaults?"** → `sdk-configuration.md` (defaults table and per-SDK options) + `concepts.md` (why the defaults differ from long-lived Workers).
+- **"Update my serverless Worker / deploy a new version"** → `aws-lambda-deployment.md` (update-function-code command, create new Worker Deployment Version, set as current) + `sdk-configuration.md` (update build ID in Worker code).
+- **"How do I handle long-running Activities?"** → `concepts.md` (timeout tuning triple, heartbeat strategy) + `sdk-configuration.md` (SDK-specific timeout option names).
+- **"Isolate Activities from resource exhaustion"** → `concepts.md` (split Workers into separate functions, or set Activity slots to 1).
 
 ### Troubleshooting
 
-If you have AWS CLI access, run diagnostic commands directly (`aws lambda get-function`, `aws logs filter-log-events`, etc.). If you have Temporal CLI access, inspect the WCI Workflow and deployment versions. Otherwise, walk the user through the diagnostic tree — tell them what to check (CloudWatch logs, WCI state in the UI, deployment version status) and interpret what they report back.
+Always start by determining whether the Lambda is being invoked at all — check CloudWatch metrics or invocation logs first.
+
+If you have AWS CLI access, run diagnostic commands directly (`aws lambda get-function`, `aws logs filter-log-events`, etc.). If you have Temporal CLI access, inspect the WCI Workflow and deployment versions (`temporal worker deployment describe-version --report-task-queue-stats`). Otherwise, walk the user through the diagnostic tree — tell them what to check and interpret what they report back.
+
+Follow this priority order:
+1. **Validate Connection** — the first step. In the Temporal UI: Workers > Deployments > select deployment > Actions > Validate Connection. This checks IAM, role assumption, and Lambda reachability in one step.
+2. **Check version is current** — if created via CLI, the version may not be set as current.
+3. **Check CloudWatch logs** — look for connection failures, TLS errors, or authentication errors in `/aws/lambda/<function-name>`.
+4. **If rapid repeated invocations with no progress** — immediately check deployment name/build ID match. This is the signature of a version mismatch loop.
+
+### Code generation guidelines
+
+When generating Worker code, CloudFormation templates, or deployment scripts:
+
+- **Always include versioning behavior.** Every Workflow must have `AutoUpgrade` or `Pinned` behavior, set per-Workflow or as a Worker-level default. Generated code that omits versioning behavior will fail at runtime.
+- **TypeScript: always use `workflowBundle` with pre-bundled code.** Never use `workflowsPath` in Lambda — it triggers webpack bundling on every cold start.
+- **Deployment name and build ID must exactly match the Worker Deployment Version.** A mismatch causes an invocation loop. When generating code, use clear placeholder names and remind the user these must match their `temporal worker deployment create-version` command.
+- **Secrets belong in Secrets Manager or Parameter Store.** Never put API keys or TLS private keys in plaintext Lambda environment variables in generated CloudFormation templates.
+- **Include both IAM roles.** The Lambda execution role (trusted by `lambda.amazonaws.com`) and the Temporal invocation role (trusted by Temporal's principals) are separate. Generated IAM resources must include both.
+- **Use the correct OTel env var per SDK.** Go and TypeScript use `OPENTELEMETRY_COLLECTOR_CONFIG_URI`. Python uses `OPENTELEMETRY_COLLECTOR_CONFIG_FILE`. These are not interchangeable.
+
+### Proactive warnings
+
+Surface these constraints early — don't wait for the user to discover them:
+
+- **Pre-release status** — mention at the start of any serverless Worker session. APIs may change, access is limited.
+- **15-minute Activity limit** — Activities must complete within the Lambda invocation limit minus the shutdown deadline buffer. If a user describes Activities that might approach this limit, flag it immediately.
+- **Eager Activities always disabled** — Lambda invocations don't maintain persistent connections. Don't suggest Eager Activities as an optimization.
+- **Timeout tuning triple** — If the user mentions long-running Activities, proactively calculate all three values together: (1) worker stop timeout > longest Activity runtime, (2) shutdown deadline buffer > worker stop timeout + shutdown hook time, (3) invocation deadline > longest Activity runtime + shutdown deadline buffer. Show the math with their specific durations.
+- **Mixed serverless + long-lived Workers** — If the user wants to share a Task Queue, warn: do NOT enable dynamic scaling on the long-lived Workers. The two groups cannot coordinate scaling and will cause unnecessary invocations.
+- **Activity heartbeats** — If the user's longest Activity runs longer than half the maximum invocation deadline (7.5 minutes for Lambda), recommend Activity Heartbeats to record state so the next retry can pick up where it left off.
 
 ## Key Facts
 
@@ -65,6 +98,16 @@ If you have AWS CLI access, run diagnostic commands directly (`aws lambda get-fu
 - Lambda execution role and Temporal invocation role are different — do not confuse them.
 - OTel env var divergence: Python uses `OPENTELEMETRY_COLLECTOR_CONFIG_FILE`; Go and TypeScript use `_URI`.
 
+## Common Pitfalls
+
+Watch for these high-impact mistakes and warn the user proactively:
+
+1. **Deployment name/build ID mismatch** — If CloudWatch shows rapid, repeated invocations with no Workflow progress, the deployment name or build ID in the Worker code doesn't match the Worker Deployment Version. This causes an invocation loop: WCI invokes Lambda → Worker polls with wrong version → Task not processed → WCI invokes again. Fix: the values in code must exactly match the Worker Deployment Version configuration. Compare against the WCI Workflow ID (`temporal-sys-worker-controller-instance:<deployment-name>:<build-id>`).
+2. **Version not set as current** — If you create a Worker Deployment Version via the CLI, it is not automatically set as current. Without this, Tasks on the Task Queue will not route to the version and the Lambda is never invoked. (The UI sets it automatically.)
+3. **Failed first invocation** — When a Worker Deployment Version is created, the WCI invokes the Lambda to validate. If that invocation fails (missing env vars, bad TLS config, missing dependencies), the Worker never connects, never polls, and the Task Queue binding is never created. The Lambda is never automatically invoked again. Diagnose by manually invoking the Lambda from the AWS Console.
+4. **Confusing execution role vs invocation role** — The Lambda execution role (trusted by `lambda.amazonaws.com`) is separate from the Temporal invocation role (trusted by Temporal's `wci-lambda-invoke` principals). The execution role grants the function permission to run. The invocation role grants Temporal permission to invoke the function. Never describe one as the other.
+5. **Timeout tuning mismatch** — Raising only the shutdown deadline buffer makes the Worker stop polling earlier but does NOT give in-flight Activities more time. Raising only the Worker stop timeout does not make the Worker stop polling earlier, so the compute provider might terminate the Worker before the stop timeout completes. The three values (worker stop timeout, shutdown deadline buffer, invocation deadline) must be tuned together.
+
 ## Intent Decision Table
 
 Use this table to find the right reference file for the user's question.
@@ -76,6 +119,12 @@ Use this table to find the right reference file for the user's question.
 | What are the SDK-specific configuration options? What are the Lambda-tuned defaults? What package do I import? How do I configure versioning behavior? How does connection config work (TOML, env vars)? | `references/sdk-configuration.md` |
 | How do I add OpenTelemetry observability? What ADOT layers do I need? What env var do I set for the collector config? How do I enable X-Ray tracing? | `references/observability.md` |
 | My Lambda is not being invoked. My Workflows are not progressing. How do I diagnose a Serverless Worker issue? How do I inspect the WCI? | `references/troubleshooting.md` |
+| How do I update or redeploy my serverless Worker with a new version? | `references/aws-lambda-deployment.md` |
+| What IAM roles and permissions does Temporal need to invoke my Lambda? | `references/aws-lambda-deployment.md` |
+| How do I handle long-running Activities on Lambda? What are the timeout relationships? | `references/concepts.md` + `references/sdk-configuration.md` |
+| How do I reduce Lambda cold start time? How do I pre-bundle Workflow code? | `references/sdk-configuration.md` |
+| How do I isolate Activities from each other to prevent resource exhaustion? | `references/concepts.md` |
+| How do I set up a self-hosted Temporal Service for serverless Workers? | `references/aws-lambda-deployment.md` |
 
 ## Out of Scope
 
