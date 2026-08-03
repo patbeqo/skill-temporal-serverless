@@ -183,7 +183,7 @@ The choice of Pinned or Auto-Upgrade controls how Workflows move between Worker 
 | **Auto-Upgrade** | Existing Workflows move to the new Worker Deployment Version and its new Lambda function version at the next Workflow Task after you move the Current Version. | The Lambda redeploy already changed the code for all versions. Setting the Current Version only changes routing, not which code runs. |
 <!-- docs/encyclopedia/workers/serverless-workers.mdx:299-302 -->
 
-See `aws-lambda-deployment.md` for the step-by-step `aws lambda publish-version` workflow and how to configure the compute provider with a versioned ARN.
+See `aws-lambda/versioning.md` for the step-by-step `aws lambda publish-version` workflow and `aws-lambda/setup.md` (Step 4) for how to configure the compute provider with a versioned ARN.
 
 ## Compute providers
 

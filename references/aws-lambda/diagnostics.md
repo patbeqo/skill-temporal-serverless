@@ -1,4 +1,4 @@
-# Troubleshooting Serverless Workers
+# AWS Lambda — Diagnostics & troubleshooting
 
 <!-- Sources:
   docs/troubleshooting/serverless-workers.mdx
@@ -58,7 +58,7 @@ If the Worker Deployment Version does not have a compute provider configured, no
 temporal worker deployment delete-version \
   --deployment-name <DEPLOYMENT_NAME> \
   --build-id <BUILD_ID>
-# then re-run: temporal worker deployment create-version --aws-lambda-function-arn ... (see the deployment guide)
+# then re-run: temporal worker deployment create-version --aws-lambda-function-arn ... (see setup.md, Step 4)
 ```
 <!-- docs/cli/command-reference/worker.mdx:139-169 -->
 `delete-version` requires the version to not be Current, Ramping, or have active pollers; add `--skip-drainage` to ignore the draining restriction. <!-- docs/cli/command-reference/worker.mdx:144-169 -->
