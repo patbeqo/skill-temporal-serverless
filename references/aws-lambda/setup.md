@@ -218,10 +218,13 @@ zip function.zip bootstrap
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+go vet ./...     # catches a missing import before the cross-compile
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap .
 zip -q function.zip bootstrap
 file bootstrap   # expect: ELF 64-bit ... statically linked
 ```
+
+Run `go vet` (or a plain `go build ./...`) before the packaging build. The three-package import block above — `lambdaworker`, `worker` for `WorkerDeploymentVersion`, and `workflow` for the versioning-behavior constants — is easy to write short by one entry, and catching that locally is faster than discovering it in the cross-compile step.
 
 An architecture mismatch surfaces only at invocation time as an `Runtime.InvalidEntrypoint`/exec-format error, not at build or package time — the same failure class as the Python wheel mismatch below.
 
@@ -373,6 +376,7 @@ aws lambda get-function --function-name my-temporal-worker \
 
 | Variable | Description |
 |---|---|
+| `HOME` | Set to `/tmp` in the Go and TypeScript examples above. Lambda's filesystem is read-only outside `/tmp`, so anything the runtime or config loader resolves relative to the home directory needs a writable target. The docs omit it from the Python example; including it there is harmless. |
 | `TEMPORAL_ADDRESS` | Temporal frontend address (e.g., `<namespace>.<account>.tmprl.cloud:7233`). |
 | `TEMPORAL_NAMESPACE` | Temporal Namespace. For Temporal Cloud, the fully-qualified `<namespace_id>.<account_id>`, not the bare name. |
 | `TEMPORAL_TASK_QUEUE` | Task Queue name. Overrides the value set in code. |
@@ -527,8 +531,21 @@ To remove a serverless Worker deployment (for example, after a Pre-release trial
    ```bash
    aws cloudformation delete-stack --stack-name <STACK_NAME> --region <AWS_REGION>
    ```
-3. Delete the Lambda function (removes all published versions) and, if you created a dedicated execution role, delete that role:
+3. Delete the Lambda function. This removes all published versions:
    ```bash
    aws lambda delete-function --function-name my-temporal-worker
    ```
-4. Revoke the Temporal Cloud API key if it was created only for this deployment (see `skill-temporal-ops`).
+4. If you created a dedicated execution role, delete it — **detach its managed policies first**, or `delete-role` fails with `DeleteConflict: Cannot delete entity, must detach all policies first`:
+   ```bash
+   ROLE=<EXECUTION_ROLE_NAME>
+   aws iam list-attached-role-policies --role-name "$ROLE" \
+     --query 'AttachedPolicies[].PolicyArn' --output text \
+     | tr '\t' '\n' | while read -r P; do aws iam detach-role-policy --role-name "$ROLE" --policy-arn "$P"; done
+   aws iam delete-role --role-name "$ROLE"
+   ```
+   Skip this if the execution role predates your deployment or is shared with other functions.
+5. Delete the CloudWatch log group. **`delete-function` does not remove it** — the log group and its retained events survive the function and keep accruing storage charges:
+   ```bash
+   aws logs delete-log-group --log-group-name /aws/lambda/my-temporal-worker
+   ```
+6. Revoke the Temporal Cloud API key if it was created only for this deployment (see `skill-temporal-ops`).
