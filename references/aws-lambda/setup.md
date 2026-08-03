@@ -17,7 +17,7 @@ This is the end-to-end golden path: connect, write the Worker, package and deplo
 - An AWS account with permissions to create and invoke Lambda functions and create IAM roles. For the exact operator actions and a preflight check, see `iam.md`. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:44 -->
 - The AWS-specific steps require the `aws` CLI installed and configured with your AWS credentials. You may also use the AWS Console or the AWS SDKs. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:45-46 -->
 - The Go SDK, Python SDK, or TypeScript SDK, depending on your language. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:48-49 -->
-- The `temporal` CLI, authenticated to the target Temporal Service — Steps 4–6 and the CLI troubleshooting paths use it. See "Temporal CLI and Cloud connection" below. <!-- field note: not in upstream prerequisites; the deployment-version and verify steps require the CLI -->
+- The `temporal` CLI, authenticated to the target Temporal Service — Steps 4–6 and the CLI troubleshooting paths use it. See "Temporal CLI and Cloud connection" below.
 
 Sample projects:
 - Go: [Go Lambda Worker sample](https://github.com/temporalio/samples-go/tree/main/lambda-worker) <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:54 -->
@@ -26,7 +26,7 @@ Sample projects:
 
 ## Temporal CLI and Cloud connection
 
-Steps 4–6 and the CLI troubleshooting paths use the `temporal` CLI. Install it and authenticate it to the target Temporal Service before those steps, or commands default to `localhost:7233` and fail against Temporal Cloud. The serverless `worker deployment create-version` subcommand and its `--aws-lambda-*` flags also require a recent CLI build — see the field note in Step 4. <!-- field note: connection setup not covered in upstream serverless docs; see docs/develop/environment-configuration.mdx -->
+Steps 4–6 and the CLI troubleshooting paths use the `temporal` CLI. Install it and authenticate it to the target Temporal Service before those steps, or commands default to `localhost:7233` and fail against Temporal Cloud. The serverless `worker deployment create-version` subcommand and its `--aws-lambda-*` flags also require a recent CLI build — see "Check the CLI version" in Step 4. <!-- docs/develop/environment-configuration.mdx -->
 
 **Authenticate to Temporal Cloud (API key).** Export environment variables (the CLI and the serverless Worker packages both read these):
 
@@ -59,7 +59,40 @@ temporal worker deployment list
 
 The Worker handles the per-invocation lifecycle: connecting to Temporal, polling for tasks, and gracefully shutting down before the invocation deadline. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:62-63 -->
 
-**Fastest path:** start from the language sample linked in Prerequisites — it has a working Worker, Workflow, and Activity already wired together. The handler examples below import the Workflow and Activity from separate modules (`my_workflows`, `my_activities`). When writing from scratch, create those modules with at least one registered Workflow (declaring a versioning behavior) and one Activity, and name the entry-point file to match the `--handler` you deploy (for example, `lambda_function.py` → `--handler lambda_function.lambda_handler`). <!-- field note: sample-first path and handler/file-name matching not spelled out upstream -->
+### Install the serverless Worker package first
+
+**The serverless Worker package is not always part of the main SDK.** Install it explicitly before writing code — do not assume an `import` resolves just because the base SDK is present. Scaffolding a project and discovering only at build time that the package lives in its own module means backing out and redoing the module setup.
+
+| SDK | Install | Packaging |
+|---|---|---|
+| Go | `go get go.temporal.io/sdk/contrib/aws/lambdaworker` | **Separate Go module** from `go.temporal.io/sdk`, with its own version line (`v0.1.1` at the time of writing). It is *not* pulled in by the main SDK — `go get` it directly, then `go mod tidy`. |
+| Python | `pip install temporalio` | `temporalio.contrib.aws.lambda_worker` ships inside the main `temporalio` package. Use `temporalio[lambda-worker-otel]` to add OpenTelemetry. |
+| TypeScript | `npm install @temporalio/lambda-worker` | Separate npm package from `@temporalio/worker`, versioned independently. |
+
+### Verify the installed API before generating code
+
+These are Pre-release APIs and signatures drift between versions. Read the real surface of the version you just installed rather than writing from memory — a wrong field name costs a build cycle:
+
+```bash
+# Go — list the exported API of the installed module version
+go doc go.temporal.io/sdk/contrib/aws/lambdaworker
+go doc go.temporal.io/sdk/contrib/aws/lambdaworker.Options
+
+# Python
+python -c "import temporalio.contrib.aws.lambda_worker as m; help(m.LambdaWorkerConfig)"
+
+# TypeScript — check the installed version, then read its type declarations
+npm ls @temporalio/lambda-worker
+```
+
+Specifics worth confirming this way, because they differ by SDK and are easy to get wrong from memory:
+
+- **Where the Task Queue lives.** In Go it is a direct field on the options object (`opts.TaskQueue`). In Python it goes through the worker-config mapping (`config.worker_config["task_queue"]`), and in TypeScript through worker options (`config.workerOptions.taskQueue`). Do not carry one shape over to another language.
+- **Where registration happens.** In Go the `Register*` methods hang off the same options object; Python and TypeScript pass Workflow and Activity collections into the worker config.
+- **You do not construct a client.** Connection details (address, namespace, API key) load automatically from environment variables and the optional TOML config file, so exported `TEMPORAL_*` variables flow straight through to the deployed function with no client code.
+- **Worker Versioning is always on.** The run-worker entry point enables it, so the only remaining decision is `Pinned` vs `AutoUpgrade` per Workflow (or a Worker-level default).
+
+**Fastest path:** start from the language sample linked in Prerequisites — it has a working Worker, Workflow, and Activity already wired together. The handler examples below import the Workflow and Activity from separate modules (`my_workflows`, `my_activities`). When writing from scratch, create those modules with at least one registered Workflow (declaring a versioning behavior) and one Activity, and name the entry-point file to match the `--handler` you deploy (for example, `lambda_function.py` → `--handler lambda_function.lambda_handler`).
 
 ### Go
 
@@ -180,6 +213,20 @@ zip function.zip bootstrap
 ```
 <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:200 -->
 
+**Add `CGO_ENABLED=0`, and match the architecture you deploy.** The `provided.al2023` runtime expects a self-contained binary; building with cgo enabled links against host libraries that may not resolve inside the runtime. Set `CGO_ENABLED=0` for a statically linked binary, and keep `GOARCH` consistent with the function's `--architectures` (`amd64` ↔ `x86_64`, `arm64` ↔ `arm64`). Also adjust the trailing package path to your layout — `.` when `main` is in the repo root, `./worker` when it is in a `worker/` subdirectory. A reusable script:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap .
+zip -q function.zip bootstrap
+file bootstrap   # expect: ELF 64-bit ... statically linked
+```
+
+An architecture mismatch surfaces only at invocation time as an `Runtime.InvalidEntrypoint`/exec-format error, not at build or package time — the same failure class as the Python wheel mismatch below.
+
+A typical Go Worker zip lands around 10–15 MB, well under the 50 MB direct-upload limit.
+
 #### Python
 
 Install dependencies into a local directory for packaging, using `--platform` for Linux-compatible binaries: <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:206-207 -->
@@ -189,7 +236,7 @@ pip install --target ./package --platform manylinux2014_x86_64 --only-binary=:al
 ```
 <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:210 -->
 
-**Field note:** Pin the download to the Lambda runtime's Python version and architecture, not your local interpreter's. If they differ (e.g. local `3.14` vs the function's `python3.13`), add `--python-version 3.13` alongside `--only-binary=:all:` so pip fetches runtime-matching wheels, and keep `--platform` (`manylinux2014_x86_64` for `x86_64`, `manylinux2014_aarch64` for `arm64`) consistent with the function's `--architectures`. Mismatches surface as import errors only at invocation time, not at package time. <!-- field note: 2026-07 serverless deployment test session; not in docs -->
+**Pin the download to the Lambda runtime's Python version and architecture, not your local interpreter's.** If they differ (e.g. local `3.14` vs the function's `python3.13`), add `--python-version 3.13` alongside `--only-binary=:all:` so pip fetches runtime-matching wheels, and keep `--platform` (`manylinux2014_x86_64` for `x86_64`, `manylinux2014_aarch64` for `arm64`) consistent with the function's `--architectures`. Mismatches surface as import errors only at invocation time, not at package time.
 
 To include OpenTelemetry support, install `temporalio[lambda-worker-otel]` instead. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:213-214 -->
 
@@ -221,7 +268,22 @@ zip -r function.zip lib/ node_modules/ workflow-bundle.js
 
 ### Deploy the Lambda function
 
-**Field note:** A freshly created execution role may not be assumable immediately — `create-function` can fail with an assume-role / "cannot be assumed by Lambda" error due to IAM propagation delay. Wait a few seconds and retry; it is not a policy error. <!-- field note: 2026-07 serverless deployment test session; not in docs -->
+**A freshly created execution role may not be assumable immediately.** `create-function` can fail with an assume-role / "cannot be assumed by Lambda" error because of IAM propagation delay. Wait a few seconds and retry; it is not a policy error, so do not start rewriting the trust policy.
+
+**Pass the API key through a file or shell variable, not inline in the shell history.** Building the `--environment` block inline puts the API key into shell history and into any command echo. Reference it from the environment and pass the block via a file instead:
+
+```bash
+cat > /tmp/lambda-env.json <<EOF
+{"Variables":{"HOME":"/tmp",
+  "TEMPORAL_ADDRESS":"${TEMPORAL_ADDRESS}",
+  "TEMPORAL_NAMESPACE":"${TEMPORAL_NAMESPACE}",
+  "TEMPORAL_API_KEY":"${TEMPORAL_API_KEY}"}}
+EOF
+aws lambda create-function ... --environment file:///tmp/lambda-env.json
+rm /tmp/lambda-env.json
+```
+
+This is still a plaintext env var on the function — acceptable for a development walkthrough only, and only if you say so explicitly. See "Environment variables" below for the production pattern.
 
 #### Go
 
@@ -277,6 +339,21 @@ aws lambda create-function \
 - `--runtime`: `nodejs22.x` (or another supported Node.js version, 20+). <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:307 -->
 - `--handler`: `lib/index.handler` (entry point in `module.export` format, must point to the handler exported by `runWorker`). <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:308 -->
 
+### Wait for the function to become Active
+
+`create-function` returns immediately with `"State": "Pending"`. The function cannot be invoked and `publish-version` fails while it is pending, so block on the state transition before the next step rather than sleeping a guessed interval:
+
+```bash
+aws lambda wait function-active-v2 --function-name my-temporal-worker
+```
+
+Use `aws lambda wait function-updated-v2` after `update-function-code` for the same reason (see `versioning.md`). The `-v2` suffix is the AWS CLI v2 waiter name; on AWS CLI v1 the waiters are `function-active` and `function-updated`. If neither resolves, poll instead:
+
+```bash
+aws lambda get-function --function-name my-temporal-worker \
+  --query 'Configuration.[State,LastUpdateStatus]' --output text
+```
+
 ### Common parameters (all SDKs)
 
 <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:315-320 -->
@@ -307,7 +384,7 @@ The serverless Worker packages read environment variables and configuration file
 
 Sensitive values like TLS keys and API keys should be encrypted at rest. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:343-344 -->
 
-The `--environment` examples above pass `TEMPORAL_API_KEY` inline for brevity — **that is acceptable for development only.** For production, store the API key (or TLS private key) in AWS Secrets Manager or SSM Parameter Store, grant the *execution* role `secretsmanager:GetSecretValue` (or `ssm:GetParameter`), and load it at cold start before the Worker initializes — for example, at module scope in the handler file, fetch the secret and set `os.environ["TEMPORAL_API_KEY"]` so the serverless Worker package reads it at startup. Do not commit key values into the `--environment` block for production functions. <!-- field note: Secrets Manager wiring not covered upstream; SKILL.md Step 4 forbids plaintext secrets -->
+The `--environment` examples above pass `TEMPORAL_API_KEY` inline for brevity — **that is acceptable for development only.** For production, store the API key (or TLS private key) in AWS Secrets Manager or SSM Parameter Store, grant the *execution* role `secretsmanager:GetSecretValue` (or `ssm:GetParameter`), and load it at cold start before the Worker initializes — for example, at module scope in the handler file, fetch the secret and set `os.environ["TEMPORAL_API_KEY"]` so the serverless Worker package reads it at startup. Do not commit key values into the `--environment` block for production functions.
 
 For updating the function code and publishing immutable versions, see `versioning.md`.
 
@@ -339,7 +416,14 @@ When you create a version through the UI, the version is automatically set as cu
 
 Use the CLI for manual setup, shell scripts, and CI/CD pipelines. When you create a version through the CLI, you must set the version as current as a separate step. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:558-559 -->
 
-**Field note — check your CLI version first.** The `worker deployment create-version` subcommand and its `--aws-lambda-*` flags only exist in recent Temporal CLI builds. Run `temporal --version` and `temporal worker deployment create-version --help`; if the subcommand or flags are missing, upgrade. In testing, a Homebrew-installed v1.5.0 lacked `create-version` entirely, while a standalone v1.8.0 had the serverless flags. You can install a current standalone build without disturbing a packaged one. <!-- field note: 2026-07 serverless deployment test session; not in docs. Exact minimum version unconfirmed against the CLI changelog — treat 1.5.0=absent / 1.8.0=present as observed bounds. -->
+**Check the CLI version before relying on these commands.** The `worker deployment create-version` subcommand and its `--aws-lambda-*` flags only exist in recent Temporal CLI builds, and a CLI old enough to lack them fails in a way that looks like a syntax mistake:
+
+```bash
+temporal --version
+temporal worker deployment create-version --help
+```
+
+If the subcommand or the flags are missing, upgrade. Observed bounds: v1.5.0 (Homebrew) lacked `create-version` entirely; v1.8.0 (standalone) had the serverless flags. The exact minimum version is unconfirmed against the CLI changelog, so treat those as bounds rather than a threshold. A current standalone build can be installed alongside a package-managed one without disturbing it — worth doing rather than upgrading a CLI the user may depend on elsewhere.
 
 First, create the Worker Deployment if it does not already exist: <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:561 -->
 
@@ -376,6 +460,17 @@ temporal worker deployment create-version \
 
 Go to **Workers** > **Deployments** > select your deployment > open the **Actions** menu on the version and click **Validate Connection**. This checks that Temporal can assume the IAM role and invoke the function. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:592-594 -->
 
+### Checkpoint: confirm the validation invocation actually bound the Task Queue
+
+**Do this before Step 5.** Creating the version triggers one validation invocation of the Lambda. If it succeeded, the Worker connected and registered its Task Queue, and `describe-version` lists that Task Queue for both workflow and activity types:
+
+```bash
+temporal worker deployment describe-version \
+  --deployment-name my-app --build-id build-1 --report-task-queue-stats
+```
+
+Task Queues listed = the invocation role, the Lambda package, the env vars, and the timeout are all working end-to-end. This is the cheapest early signal in the whole setup, and it isolates a first-invocation failure to Step 2/3 *before* current-version routing adds another variable. If no Task Queues are listed, stop here and go to `diagnostics.md` ("Failed first invocation") — setting the version current will not fix it.
+
 ## Step 5: Set version as current
 
 If you created the version through the Temporal UI, the version is already current — skip this step. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:598 -->
@@ -385,9 +480,18 @@ If you used the CLI, set the version as current. Without this step, tasks on the
 ```bash
 temporal worker deployment set-current-version \
   --deployment-name my-app \
-  --build-id build-1
+  --build-id build-1 \
+  --yes
 ```
 <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:603-607 -->
+
+**`set-current-version` asks for interactive confirmation.** Without `--yes` (`-y`) it prompts, and run non-interactively (scripts, CI, or an agent shell) it exits without applying the change — which reads as a silent no-op: the command appears to succeed but the version never becomes current. Pass `--yes` for any non-interactive use. `set-ramping-version` behaves the same way. Note that `delete-version` does *not* take `--yes` — its gating flag is `--skip-drainage`. <!-- docs/cli/command-reference/worker.mdx:349-391 -->
+
+Confirm it took effect before moving on:
+
+```bash
+temporal worker deployment describe --name my-app
+```
 
 ## Step 6: Verify deployment
 
@@ -410,13 +514,16 @@ If the Workflow does not progress or the Lambda is not invoked, see `diagnostics
 
 ## Teardown
 
-To remove a serverless Worker deployment (for example, after a Pre-release trial), tear down in this order so nothing is left invoking or being invoked: <!-- field note: teardown not covered upstream -->
+**Record what you create, as you create it.** These are live, billable AWS resources spread across three services plus Temporal Cloud, and their names are only knowable from the run that created them. Keep a running inventory — function name and published version numbers, execution role name, CloudFormation stack name and role name, region, deployment name and build ID — and hand it to the user at the end alongside the teardown commands. Reconstructing it later means scanning the account, which the skill otherwise tells you not to do.
+
+To remove a serverless Worker deployment (for example, after a Pre-release trial), tear down in this order so nothing is left invoking or being invoked:
 
 1. Delete the Worker Deployment Version. This stops its WCI (one WCI runs per version with a compute provider). If other versions exist, set another current first with `set-current-version`.
    ```bash
    temporal worker deployment delete-version --deployment-name my-app --build-id build-1
    ```
-2. Delete the CloudFormation stack that created the Temporal invocation role:
+   The version must not be Current or Ramping and must have no active pollers; add `--skip-drainage` to ignore the draining restriction.
+2. Delete the CloudFormation stack that created the Temporal invocation role — **only if this deployment created it.** One invocation role can authorize several Worker Lambdas, so a pre-existing stack may still be in use by another deployment; in that case remove just this function's ARN from its `LambdaFunctionARNs` instead (see `iam.md`).
    ```bash
    aws cloudformation delete-stack --stack-name <STACK_NAME> --region <AWS_REGION>
    ```

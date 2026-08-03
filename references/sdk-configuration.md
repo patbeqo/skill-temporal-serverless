@@ -12,6 +12,8 @@
 
 Import: `lambdaworker "go.temporal.io/sdk/contrib/aws/lambdaworker"` <!-- docs/develop/go/workers/serverless-workers/aws-lambda.mdx:50 -->
 
+Install: `go get go.temporal.io/sdk/contrib/aws/lambdaworker` — **this is a separate Go module** from `go.temporal.io/sdk`, versioned independently (`v0.1.1` at the time of writing). Having the main SDK in `go.mod` does not make it importable; add it explicitly, then `go mod tidy`. Verify the installed surface with `go doc go.temporal.io/sdk/contrib/aws/lambdaworker` before generating code — the API is Pre-release and drifts.
+
 ### Entry point
 
 `lambdaworker.RunWorker` — starts a Lambda-based Worker. Pass a `WorkerDeploymentVersion` and a callback that registers Workflows and Activities. <!-- docs/develop/go/workers/serverless-workers/aws-lambda.mdx:39-40 -->
@@ -71,6 +73,8 @@ The file is optional. If absent, only environment variables are used. <!-- docs/
 
 Import: `from temporalio.contrib.aws.lambda_worker import LambdaWorkerConfig, run_worker` <!-- docs/develop/python/workers/serverless-workers/aws-lambda.mdx:47 -->
 
+Install: `pip install temporalio` — the contrib module ships inside the main package here (unlike Go and TypeScript, which need a separate dependency). Use `temporalio[lambda-worker-otel]` for OpenTelemetry support.
+
 ### Entry point
 
 `run_worker` — takes a `WorkerDeploymentVersion` and a configure callback, returns a Lambda handler. <!-- docs/develop/python/workers/serverless-workers/aws-lambda.mdx:39-40,66 -->
@@ -127,6 +131,8 @@ The file is optional. If absent, only environment variables are used. <!-- docs/
 ### Package
 
 Import: `import { runWorker } from '@temporalio/lambda-worker'` <!-- docs/develop/typescript/workers/serverless-workers/aws-lambda.mdx:45 -->
+
+Install: `npm install @temporalio/lambda-worker` — a separate npm package from `@temporalio/worker`, versioned independently.
 
 ### Entry point
 

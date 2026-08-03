@@ -9,7 +9,7 @@ This file covers three distinct identities: the **operator** (whose credentials 
 
 ## Operator AWS permissions
 
-The identity whose credentials run the `aws`/CloudFormation commands (local profile, EC2/ECS instance role, CI role, or CloudShell console identity) needs the actions below. These are separate from the execution and invocation roles created in Step 3. <!-- field note: derived from the commands in this guide; not enumerated in upstream docs -->
+The identity whose credentials run the `aws`/CloudFormation commands (local profile, EC2/ECS instance role, CI role, or CloudShell console identity) needs the actions below. These are separate from the execution and invocation roles created in Step 3.
 
 | Deployment step | Operator actions required |
 |---|---|
@@ -68,6 +68,62 @@ Temporal needs permission to invoke your Lambda function and check its status. T
 | `LambdaFunctionARNs` | Comma-separated list of Lambda function ARNs that Temporal may invoke. To allow invocation of any published version of a function, use a wildcard suffix (for example, `arn:aws:lambda:...:function:my-temporal-worker:*`). One role can authorize multiple Worker Lambdas. |
 | `RoleName` | Base name for the created IAM role. Defaults to `Temporal-Cloud-Serverless-Worker`. Provide a new role name if creating more than one stack. |
 
+#### Before creating the stack: check whether the role already exists
+
+**The default `RoleName` collides, and the failure mode is a full stack rollback.** The template creates a *named* IAM role, and IAM role names are unique per account. Any earlier serverless deployment in the same account already holds `Temporal-Cloud-Serverless-Worker`, so a second `create-stack` with default parameters fails with `already exists` and rolls the whole stack back. Check first:
+
+```bash
+ROLE=Temporal-Cloud-Serverless-Worker   # or whatever name you intend to use
+
+# Does the role already exist?
+aws iam get-role --role-name "$ROLE" --query 'Role.Arn' --output text 2>/dev/null \
+  || echo "not present — safe to create"
+
+# If it does: which stack owns it? CloudFormation tags the resources it creates.
+# Empty output means the role is orphaned or hand-created, not stack-managed.
+aws iam list-role-tags --role-name "$ROLE" \
+  --query 'Tags[?Key==`aws:cloudformation:stack-name`].Value' --output text
+
+# Cross-check against the stack list if the tag lookup comes back empty
+aws cloudformation describe-stacks --region <AWS_REGION> \
+  --query 'Stacks[?StackStatus!=`DELETE_COMPLETE`].{Name:StackName,Status:StackStatus}' \
+  --output table
+```
+
+Then pick a path — **prefer reuse over a parallel role.** The invocation role is account-wide shared infrastructure, not per-function, and one role can authorize many Worker Lambdas:
+
+| Situation | Action |
+|---|---|
+| No role, no stack | Create the stack as documented below. |
+| A stack owns the role, and this deployment is a legitimate addition | **Update that stack**, adding your function's ARNs to `LambdaFunctionARNs` (`aws cloudformation update-stack` with the full comma-separated list — CloudFormation replaces the list, it does not merge). Reuse its `RoleARN` output. Do not create a second role. |
+| A stack owns the role but is someone else's infrastructure you must not touch | Create a *separate* stack with an explicit distinct `RoleName` (for example `Temporal-Cloud-Serverless-Worker-<purpose>`) and say why in your summary. Two roles is the fallback, not the default. |
+| The role exists but no stack owns it (orphaned or hand-created) | Do not delete it blind. Either reuse it after confirming its trust policy and permissions, or create a new stack with a distinct `RoleName`. Ask the user before removing an unowned IAM role. |
+
+**Recovering from a rolled-back stack.** A stack in `ROLLBACK_COMPLETE` cannot be updated or re-created under the same name — delete it first, then create again with corrected parameters. Read the actual cause before changing anything:
+
+```bash
+aws cloudformation describe-stack-events --stack-name <STACK_NAME> --region <AWS_REGION> \
+  --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`].[LogicalResourceId,ResourceStatusReason]' --output table
+aws cloudformation delete-stack --stack-name <STACK_NAME> --region <AWS_REGION>
+aws cloudformation wait stack-delete-complete --stack-name <STACK_NAME> --region <AWS_REGION>
+```
+
+Deleting a `ROLLBACK_COMPLETE` stack is safe — it created nothing that survived. Deleting a stack in any *successful* state is not; that is live infrastructure.
+
+#### Which ARNs to authorize
+
+**`function:name:*` does not match the unqualified `function:name`.** In IAM, the wildcard-version ARN covers published versions and aliases only; the unqualified function ARN is a distinct resource. Temporal needs `lambda:GetFunction` and `lambda:InvokeFunction` to resolve for whatever ARN form you register on the Worker Deployment Version, so authorize **both** forms and you are covered either way:
+
+```bash
+FN=arn:aws:lambda:<AWS_REGION>:<ACCOUNT_ID>:function:my-temporal-worker
+# The CLI shorthand needs the literal double quotes to survive, so that the
+# embedded comma is read as a list separator and not as the next ParameterKey:
+ARNS="\"$FN,$FN:*\""
+# ... --parameters ParameterKey=LambdaFunctionARNs,ParameterValue="$ARNS"
+```
+
+The `:*` form is also what makes future `publish-version` builds work without an IAM change — authorizing a single fixed version (`function:my-temporal-worker:1`) means the next published version cannot be invoked, which surfaces later as a validation/invocation failure that looks unrelated to IAM. See `versioning.md`.
+
 #### Trust policy principals
 
 The Cloud template trusts five Temporal Cloud AWS account IDs with the role `wci-lambda-invoke`: <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:457-464 -->
@@ -82,7 +138,7 @@ The IAM policy grants `lambda:InvokeFunction` and `lambda:GetFunction` on the sp
 
 #### Deploy the CloudFormation stack
 
-This skill ships the complete, ready-to-deploy template at `assets/temporal-cloud-serverless-worker-role.yaml` (transcribed verbatim from the docs). Copy it into your working directory, or point `--template-body` at the skill's copy — no need to author it by hand. <!-- field note: template shipped as skill asset; verbatim from docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:404-501 -->
+This skill ships the complete, ready-to-deploy template at `assets/temporal-cloud-serverless-worker-role.yaml` (transcribed verbatim from the docs). Copy it into your working directory, or point `--template-body` at the skill's copy — no need to author it by hand. <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:404-501 -->
 
 ```bash
 aws cloudformation create-stack \
@@ -90,11 +146,21 @@ aws cloudformation create-stack \
   --template-body file://temporal-cloud-serverless-worker-role.yaml \
   --parameters \
     ParameterKey=AssumeRoleExternalId,ParameterValue=<EXTERNAL_ID> \
-    ParameterKey=LambdaFunctionARNs,ParameterValue='"<LAMBDA_FUNCTION_ARN>"' \
+    ParameterKey=LambdaFunctionARNs,ParameterValue='"<LAMBDA_FUNCTION_ARN>,<LAMBDA_FUNCTION_ARN>:*"' \
+    ParameterKey=RoleName,ParameterValue=<ROLE_NAME> \
   --capabilities CAPABILITY_NAMED_IAM \
   --region <AWS_REGION>
 ```
-<!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:509-517 -->
+<!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:509-517; RoleName and dual-ARN values per the guidance above -->
+
+Notes on the parameters above:
+
+- **Set `RoleName` explicitly** rather than relying on the default, so the name reflects this deployment and does not collide with an existing one (see the collision check above).
+- **`LambdaFunctionARNs` is a `CommaDelimitedList`.** The `'"a,b"'` quoting is required: the AWS CLI's `ParameterKey=,ParameterValue=` shorthand otherwise reads the embedded comma as the start of a new key. Keep the literal double quotes inside the single quotes.
+- **Generate the External ID rather than choosing a memorable string** — it is a confused-deputy guard. The template accepts 5–45 characters matching `[a-zA-Z0-9_+=,.@-]*`. Record it: you need the identical value when registering the Worker Deployment Version, and it is not recoverable from the version afterward.
+  ```bash
+  EXTERNAL_ID=$(openssl rand -hex 16)
+  ```
 
 Retrieve the IAM role ARN from the stack outputs: <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:519 -->
 
@@ -113,7 +179,7 @@ Self-hosted Serverless Workers require Temporal Service v1.31.0 or later. <!-- d
 
 Temporal invokes Lambda functions by assuming an IAM role in your AWS account. This role needs `lambda:GetFunction` and `lambda:InvokeFunction` permission on your Worker Lambda functions, and a trust policy that allows the Temporal server's identity to assume it. <!-- docs/production-deployment/worker-deployments/serverless-workers/self-hosted-setup.mdx:105-107 -->
 
-This skill ships the complete self-hosted template at `assets/temporal-self-hosted-serverless-worker-role.yaml` (verbatim from the docs). Copy it locally or point `--template-body` at the skill's copy. <!-- field note: template shipped as skill asset; verbatim from docs/production-deployment/worker-deployments/serverless-workers/self-hosted-setup.mdx:136-209 -->
+This skill ships the complete self-hosted template at `assets/temporal-self-hosted-serverless-worker-role.yaml` (verbatim from the docs). Copy it locally or point `--template-body` at the skill's copy. <!-- docs/production-deployment/worker-deployments/serverless-workers/self-hosted-setup.mdx:136-209 -->
 
 ```bash
 aws cloudformation create-stack \
