@@ -46,13 +46,13 @@ If validation fails: <!-- docs/troubleshooting/serverless-workers.mdx:71-74 -->
 - Verify the Lambda function ARN and invocation role ARN in the Worker Deployment Version configuration are correct.
 - Verify the invocation role was created using the CloudFormation template and that the External ID matches the value in the Worker Deployment Version configuration.
 
-**Field note — not every validation failure is on your side.** If the error is Temporal failing to obtain its **own** base AWS credentials (for example, `no EC2 IMDS role found`) while assuming the `wci-lambda-invoke` role, that is a Temporal-Cloud-side credential problem occurring *before* Temporal ever reaches your invocation role or Lambda. Signature: it reproduces identically no matter what you change on the AWS side, and (for Cloud) is independent of your trust policy or External ID. Do not keep editing your AWS config — verify your artifacts once (Lambda `Active` with the correct runtime; trust policy lists all five `wci-lambda-invoke` principals plus the `sts:ExternalId` condition; invoke permissions scoped to the function ARN), then escalate to Temporal support. Expect infrastructure-side rough edges while the feature is Pre-release. <!-- field note: 2026-07 serverless deployment test session; not in docs -->
+**Not every validation failure is on your side.** If the error is Temporal failing to obtain its **own** base AWS credentials (for example, `no EC2 IMDS role found`) while assuming the `wci-lambda-invoke` role, that is a Temporal-Cloud-side credential problem occurring *before* Temporal ever reaches your invocation role or Lambda. Signature: it reproduces identically no matter what you change on the AWS side, and (for Cloud) is independent of your trust policy or External ID. Do not keep editing your AWS config — verify your artifacts once (Lambda `Active` with the correct runtime; trust policy lists all five `wci-lambda-invoke` principals plus the `sts:ExternalId` condition; invoke permissions scoped to the function ARN), then escalate to Temporal support. Expect infrastructure-side rough edges while the feature is Pre-release.
 
 If the Worker Deployment Version does not have a compute provider configured, no WCI Workflow exists and the Lambda is never automatically invoked. <!-- docs/troubleshooting/serverless-workers.mdx:76-78 -->
 
 **Common cause:** Manually invoking the Lambda function before creating the Worker Deployment Version in the UI or CLI. When the Lambda runs, the Worker connects to Temporal and polls the Task Queue. That polling registers the Worker Deployment Version and binds the Task Queue on the server, but the version has no compute provider. To fix, create or update the Worker Deployment Version with the compute provider flags. <!-- docs/troubleshooting/serverless-workers.mdx:78-82 -->
 
-**Field note — recovering a provider-less version via the CLI.** In practice there is no `update-provider` command, and `describe-version` does **not** show whether a compute provider is attached, so you cannot confirm the provider-less state by inspecting the version — you infer it because `create-version` reports the version already exists. Re-running `create-version` fails for the same reason. The reliable fix is to **delete the provider-less version and recreate it** with the compute-provider flags. This is clean as long as the version was never set as current. <!-- field note: 2026-07 serverless deployment test session; not in docs -->
+**Recovering a provider-less version via the CLI.** In practice there is no `update-provider` command, and `describe-version` does **not** show whether a compute provider is attached, so you cannot confirm the provider-less state by inspecting the version — you infer it because `create-version` reports the version already exists. Re-running `create-version` fails for the same reason. The reliable fix is to **delete the provider-less version and recreate it** with the compute-provider flags. This is clean as long as the version was never set as current.
 
 ```bash
 temporal worker deployment delete-version \
@@ -70,8 +70,10 @@ The Worker Deployment Version must be set as the current version for new Tasks t
 Verify the current version with: <!-- docs/troubleshooting/serverless-workers.mdx:90 -->
 
 ```bash
-temporal worker deployment describe
+temporal worker deployment describe --name <DEPLOYMENT_NAME>
 ```
+
+**A `set-current-version` that ran without `--yes` may have done nothing.** The command prompts for confirmation; run non-interactively (script, CI, agent shell) it exits without applying the change, which is easy to mistake for success. If `describe` does not show your build as current, re-run `set-current-version` with `--yes` rather than looking for a deeper cause.
 
 ### 3. Check that the WCI is detecting Tasks
 
@@ -90,6 +92,8 @@ temporal worker deployment describe-version \
 
 If no Task Queues are listed, the binding has not been established. The server binds a Task Queue to a Worker Deployment Version when a Worker with that deployment version successfully connects and polls the Task Queue. <!-- docs/troubleshooting/serverless-workers.mdx:108-109 -->
 
+**What a healthy version looks like.** The inverse of the check above is the single most useful positive signal in the whole setup: the Task Queue appearing here, for both workflow and activity task types, proves that Temporal assumed the invocation role, invoked the Lambda, the package loaded, the env vars were right, the Worker authenticated to the Namespace, and the timeout was long enough to reach a poll. Getting this output means every remaining failure is downstream (routing, versioning-behavior, or application code), so check it immediately after `create-version` and before touching anything else. `describe-version` still does **not** report whether a compute provider is attached, so it cannot rule that in or out.
+
 #### Failed first invocation
 
 A common cause of missing Task Queue bindings is a failed first invocation. When you create a Worker Deployment Version, the WCI invokes the Lambda to validate the configuration. If that first invocation fails (for example, due to missing environment variables, incorrect TLS configuration, missing dependencies, or a Lambda timeout that is too short), the Worker never connects to Temporal and never polls. Without a successful poll, the Task Queue binding is never created. <!-- docs/troubleshooting/serverless-workers.mdx:111-114 -->
@@ -98,9 +102,9 @@ Pay particular attention to the Lambda timeout. AWS Lambda functions default to 
 
 To diagnose: invoke the Lambda function manually from the AWS Console. The console displays the execution result and any errors directly, making it easier to identify configuration issues than searching through CloudWatch logs. Once the Lambda runs successfully and the Worker connects to Temporal, the Task Queue binding is established. <!-- docs/troubleshooting/serverless-workers.mdx:121-124 -->
 
-**Field note — a manual invoke runs for nearly the whole timeout.** A serverless Worker keeps polling until its shutdown-deadline buffer, so a synchronous manual invoke runs for roughly the full Lambda timeout (e.g. ~590s of a 600s timeout), not a few seconds. From the AWS CLI (`aws lambda invoke`) this trips the default **60-second client read timeout** with a "Read timeout on endpoint" error — that is expected, **not** a Worker crash. Add `--cli-read-timeout 0` (or use `--invocation-type Event` for an async invoke), and judge health from the CloudWatch startup logs (Worker connected + polling), not from the CLI's exit. Remember this successful poll also auto-registers a provider-less version — see "Common cause" above. <!-- field note: 2026-07 serverless deployment test session; not in docs -->
+**A manual invoke runs for nearly the whole timeout.** A serverless Worker keeps polling until its shutdown-deadline buffer, so a synchronous manual invoke runs for roughly the full Lambda timeout (e.g. ~590s of a 600s timeout), not a few seconds. From the AWS CLI (`aws lambda invoke`) this trips the default **60-second client read timeout** with a "Read timeout on endpoint" error — that is expected, **not** a Worker crash. Add `--cli-read-timeout 0` (or use `--invocation-type Event` for an async invoke), and judge health from the CloudWatch startup logs (Worker connected + polling), not from the CLI's exit. Remember this successful poll also auto-registers a provider-less version — see "Common cause" above.
 
-**Field note — a running WCI is not proof anything works.** The WCI Workflow continue-as-news and keeps running even while its invocation/scaling Activities are failing, so its existence tells you nothing about invocation health. Read the WCI's history (below) and look for **Activity failures** to find the real error. Never infer health from the WCI merely existing or running. <!-- field note: 2026-07 serverless deployment test session; not in docs -->
+**A running WCI is not proof anything works.** The WCI Workflow continue-as-news and keeps running even while its invocation/scaling Activities are failing, so its existence tells you nothing about invocation health. Read the WCI's history (below) and look for **Activity failures** to find the real error. Never infer health from the WCI merely existing or running.
 
 
 ---
@@ -141,7 +145,7 @@ To fix the loop, update the deployment name and build ID in the Worker code to m
 
 ## WCI Workflow inspection
 
-You never create or manage a WCI Workflow yourself — Temporal creates one automatically for each Worker Deployment Version that has a compute provider, and it lives in a `temporal-sys-*` Namespace division. Diagnose from Temporal's own signals (the WCI history) **before** touching AWS; do not enumerate Lambdas across regions or scan the AWS account to reverse-engineer state, which is invasive, slow, and unnecessary. <!-- field note: 2026-07 serverless deployment test session; not in docs -->
+You never create or manage a WCI Workflow yourself — Temporal creates one automatically for each Worker Deployment Version that has a compute provider, and it lives in a `temporal-sys-*` Namespace division. Diagnose from Temporal's own signals (the WCI history) **before** touching AWS; do not enumerate Lambdas across regions or scan the AWS account to reverse-engineer state, which is invasive, slow, and unnecessary.
 
 List WCI Workflows in your Namespace: <!-- docs/encyclopedia/workers/serverless-workers.mdx:75 -->
 
