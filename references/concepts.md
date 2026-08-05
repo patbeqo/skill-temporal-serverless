@@ -2,10 +2,13 @@
 
 <!-- Sources: docs/encyclopedia/workers/serverless-workers.mdx, docs/evaluate/development-production-features/serverless-workers/index.mdx -->
 
-## Pre-release status
+## Release status
 
-Serverless Workers are in Pre-release. Request access via a support ticket or your account team. <!-- docs/encyclopedia/workers/serverless-workers.mdx:24 -->
-APIs are experimental and may be subject to backwards-incompatible changes. Temporal will notify sign-ups when Serverless Workers reach Public Preview. <!-- docs/encyclopedia/workers/serverless-workers.mdx:25-27 -->
+**AWS Lambda — Public Preview since July 30, 2026.** Open to all Temporal Cloud customers. There is no access request, no support ticket, and no manual toggle to enable: a customer selects "AWS Lambda (Public Preview)" as the compute provider in the UI and sets up their Worker Deployment directly. Never route a user to support to "get access" for Lambda.
+
+**GCP Cloud Run — still Pre-release and gated.** Access requires a manual request, the same way Lambda worked before July 30, 2026. This skill does not cover Cloud Run deployment; do not adapt the Lambda material to it.
+
+Public Preview is not General Availability. APIs are still evolving and may be subject to backwards-incompatible changes between versions — pin SDK and CLI versions for anything long-lived, and read the installed package's real API surface rather than writing from memory.
 
 ## What is a Serverless Worker?
 

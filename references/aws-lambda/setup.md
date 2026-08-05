@@ -71,7 +71,7 @@ The Worker handles the per-invocation lifecycle: connecting to Temporal, polling
 
 ### Verify the installed API before generating code
 
-These are Pre-release APIs and signatures drift between versions. Read the real surface of the version you just installed rather than writing from memory — a wrong field name costs a build cycle:
+These are Public Preview APIs and signatures drift between versions. Read the real surface of the version you just installed rather than writing from memory — a wrong field name costs a build cycle:
 
 ```bash
 # Go — list the exported API of the installed module version
@@ -520,7 +520,7 @@ If the Workflow does not progress or the Lambda is not invoked, see `diagnostics
 
 **Record what you create, as you create it.** These are live, billable AWS resources spread across three services plus Temporal Cloud, and their names are only knowable from the run that created them. Keep a running inventory — function name and published version numbers, execution role name, CloudFormation stack name and role name, region, deployment name and build ID — and hand it to the user at the end alongside the teardown commands. Reconstructing it later means scanning the account, which the skill otherwise tells you not to do.
 
-To remove a serverless Worker deployment (for example, after a Pre-release trial), tear down in this order so nothing is left invoking or being invoked:
+To remove a serverless Worker deployment (for example, after an evaluation), tear down in this order so nothing is left invoking or being invoked:
 
 1. Delete the Worker Deployment Version. This stops its WCI (one WCI runs per version with a compute provider). If other versions exist, set another current first with `set-current-version`.
    ```bash
