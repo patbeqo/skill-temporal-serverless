@@ -1,7 +1,7 @@
 ---
 name: temporal-serverless
 description: 'Deploy and operate Temporal Workers on serverless compute (currently AWS Lambda in Public Preview, and GCP Cloud Run in Pre-release) driven by the Worker Controller Instance (WCI). Use when the user mentions: "serverless worker", "Temporal serverless", "Worker Controller Instance", "WCI", "deploy Temporal worker on Lambda", "Lambda packaging", "Lambda timeout", "WCI inspection", "CloudFormation Temporal".'
-version: 0.4.0
+version: 0.5.0
 ---
 
 # Skill: temporal-serverless
@@ -10,7 +10,9 @@ version: 0.4.0
 
 This skill helps users deploy and operate Temporal Workers on serverless compute. Instead of a long-lived process, Temporal invokes the Worker on demand through the Worker Controller Instance (WCI); the Worker processes available Tasks and shuts down, scaling to zero when idle. The skill produces Worker code, deployment configuration, connection configs, and packaging steps for the chosen SDK, and walks users through troubleshooting when serverless Workers aren't picking up Tasks.
 
-AWS Lambda is the only compute provider this skill covers. (GCP Cloud Run exists but is still Pre-release and access-gated behind a manual request — if a user asks about it, say so and do not improvise a deployment from the Lambda material.) Provider-specific commands, templates, permissions, and defaults live in the reference files (see Routing) — this file stays at the workflow level so it can cover additional providers as they are added. When a step needs concrete commands, go to the reference file named at the end of that step.
+AWS Lambda is the compute provider this skill covers. GCP Cloud Run exists but is Pre-release, access-gated behind a manual request, and not covered here — if a request names Cloud Run or GCP, stop and say so rather than adapting the Lambda material. **Never let the provider be an unstated assumption:** when the request does not name one, it is confirmed as part of the step 1 questions, not silently defaulted.
+
+Provider-specific commands, templates, permissions, and defaults live in the reference files (see Routing) — this file stays at the workflow level so it can cover additional providers as they are added. When a step needs concrete commands, go to the reference file named at the end of that step.
 
 Serverless Workers on **AWS Lambda are in Public Preview** as of July 30, 2026, and are **open to all Temporal Cloud customers** — no access request, no support ticket, no manual toggle. Do not tell a user to request access or confirm eligibility; they can select "AWS Lambda (Public Preview)" as the compute provider in the UI and deploy today. Public Preview is not GA: the APIs are still evolving and may change, so pin SDK and CLI versions for anything long-lived and read the installed package's actual API surface rather than writing from memory.
 
@@ -18,11 +20,72 @@ Serverless Workers on **AWS Lambda are in Public Preview** as of July 30, 2026, 
 
 Follow these steps in order. Each step is provider-neutral; the concrete commands, templates, and options live in the reference file named at the end of the step.
 
-1. **Scope the task.** Identify the SDK language (Go, Python, or TypeScript), the deployment target (Temporal Cloud or self-hosted — self-hosted has its own server prerequisites), the compute provider, and whether this is a new setup, a configuration change, or troubleshooting. Confirm the deployment target is compatible with the chosen provider — for a Temporal Cloud Namespace, its cloud provider and region must match the compute provider, or the deployment fails only later at connection time. Ensure a Temporal client/CLI is available and authenticated to the target. Each changes the specifics. → `references/concepts.md` for what the user is building; `references/aws-lambda/setup.md` for the compatibility and client-setup details.
+**Open a new deployment with a plain-language summary of the run.** Before the step 1 questions, tell the user in a few sentences what is about to happen: that this creates real resources in their cloud account which cost money for as long as they exist; that you will ask about a handful of things, then show an exact list of what you are about to create and wait for approval, and that nothing is created before that approval; that the middle of the run is unattended; and that it ends with a Workflow they can watch execute, an inventory of everything created, and an offer to remove it all. Name the five stages below in ordinary words. This is orientation to the engagement — its shape, its stakes, and what you need from the user — not an explanation of Temporal or of serverless compute, and it should stay short enough to read at a glance.
+
+**Lay it out as bullets, with the five stages as sub-bullets under "How it goes" — one stage per line, never chained into a single run-on bullet.** Follow this shape:
+
+> Here's what's about to happen, before I ask anything:
+>
+> - This creates real resources in your cloud account — the compute unit that runs your Worker, roles, an infrastructure stack, logs. They're live and billable for as long as they exist.
+> - **How it goes.** Five stages:
+>   - **Scope** — a handful of questions, below.
+>   - **Access** — check credentials and permissions on both sides, then show you an exact list of what I'm about to create and wait for your approval.
+>   - **Build** — write, package, deploy the Worker.
+>   - **Connect** — bind the Task Queue, set the version current.
+>   - **Verify and hand back.**
+> - Nothing gets created before you approve that list. After approval the middle stretch runs unattended.
+> - At the end you get a Workflow you can watch execute, a full inventory of everything created, and an offer to remove it all.
+
+**Write the summary provider-neutral, because at that point you do not know the provider.** It is one of the things step 1 asks. Say "your cloud account", never the name of a provider you have not been told. The same discipline applies to the account, Namespace, and region: if a cheap read-only call has already told you (see step 1), name what you actually found; otherwise leave it out rather than filling it in with a plausible guess.
+
+Skip the summary for troubleshooting, inspection, and configuration-change tasks. Someone whose Worker is not being invoked does not need an overview of a deployment they have already done.
+
+**Then track the run on a checklist and keep it current.** The eight steps group into the five stages below. Create one item per step, grouped under its stage, and mark each complete as you finish it, so the user can see where they are without reading every command. Use the harness's todo list where there is one; otherwise print the checklist and reprint it when it changes. Scope and Access end in a user decision and are visible anyway — the checklist exists for Build through hand back, which run unattended once the list of resources to create is approved and are otherwise the longest silent stretch of the run.
+
+**Word each item as plain language about what happens, not as a compressed step title.** The reader has not read this file, so internal shorthand tells them nothing: name the two sides — "on AWS and on Temporal", never "both sides" — and describe the approval gate by what it does rather than by a label. Build the checklist once step 1's answers land, so items can name the confirmed provider and the agreed prefix instead of hedging; mark Scope complete as you write it.
+
+Step 2's item carries two beats and is the one that degrades worst under compression. Write it out in full:
+
+> *Access — check credentials and permissions on AWS and on Temporal, then show the exact list of resources to be created and wait for your approval.*
+
+| Stage | Steps | Complete when |
+|---|---|---|
+| Scope | 1 | SDK, compute provider, Namespace, and naming prefix are all confirmed by the user. |
+| Access | 2 | Compute provider and Temporal both authenticated, permissions confirmed, and the list of resources to create approved. |
+| Build | 3–4 | The compute unit is deployed and reports ready, built for the architecture it runs on. |
+| Connect | 5–6 | The Task Queue is bound and the version is current. |
+| Verify and hand back | 7–8 | A Workflow completed, two independent signals agree, the inventory is delivered, and teardown has been offered. |
+
+**A step is complete when its verification passed — not when its command exited zero.** Several commands in this workflow exit clean having done nothing: the traffic-shifting and key-revocation commands no-op when their confirmation prompt goes unanswered, and providers return from create and update calls while the resource is still settling. Check an item off against state you read back, not against an exit code. When a step's verification fails, say which step you are on and what it is blocked on rather than moving down the list.
+
+1. **Scope the task.** Identify the SDK language (Go, Python, or TypeScript), the deployment target (Temporal Cloud or self-hosted — self-hosted has its own server prerequisites), the compute provider, and whether this is a new setup, a configuration change, or troubleshooting. Confirm the deployment target is compatible with the chosen provider — for a Temporal Cloud Namespace, its cloud *provider* must match the compute provider (an AWS Lambda Worker needs an AWS Namespace), or the deployment fails only later at connection time. **Regions do not have to match:** a Namespace in one region can drive a compute unit in another, so never tell a user to move or re-create a Namespace to line up regions. Ensure a Temporal client/CLI is available and authenticated to the target. Each changes the specifics. → `references/concepts.md` for what the user is building; `references/aws-lambda/setup.md` for the compatibility and client-setup details.
+
+   **Put the compute provider in that batch of questions as a confirmable default, not a free choice.** Pre-select AWS Lambda and carry the status in its description — Public Preview, open to all Temporal Cloud customers, the provider this skill covers — with GCP Cloud Run named there as Pre-release, access-gated, and not covered. The user confirms rather than chooses, so it costs no extra turn, but the provider is never something they were assumed into. Skip the question only when the request already names a provider. Do not precede the batch with a separate paragraph restating any of this; the option description is where it belongs. The run summary above is not that paragraph — it orients the user to the shape and stakes of the run, names no provider, and restates no option's description.
+
+   **Let the user pick the Namespace from a list; never make them retype one.** Namespace names are long and error-prone (`quickstartai-tombalei-qqfy1f9w.ewkya`). Where control-plane access is available, `temporal cloud namespace list` gives the names and their regions in one call — and a region ID is provider-prefixed (`aws-…`, `gcp-…`), so the same response tells you each Namespace's provider. Only the prefix carries meaning; the region itself imposes no constraint.
+
+   Present it like this:
+
+   - **Offer the eligible Namespaces as the options**, each labelled with its region.
+   - **Summarize the ineligible ones in a single line** — "you also have 2 Namespaces on GCP, not eligible while AWS Lambda is the only supported provider" — rather than listing them individually or hiding them. A user who knows they have a GCP Namespace and cannot find it concludes the tool is broken; one line keeps them informed and explains the constraint.
+   - **Name the account you are listing from and confirm it is the intended one** before showing anything. A stale credential lists a real account that is not the one the user means to deploy into, and every option under it looks authoritative.
+   - **If more Namespaces are eligible than the question format can hold, print the labelled list and ask the user to name one.** Do not silently show only the first few.
+
+   This also settles the compute-provider answer: a Namespace's provider must match the compute provider, so a confident "AWS Lambda" against a GCP Namespace is caught here rather than at connection time, several steps later.
+
+   **Degrade gracefully — this call fails on some accounts.** Where the org federates Temporal Cloud through IdP-initiated corporate SSO, control-plane commands may not work at all (see `references/aws-lambda/setup.md`). Do not treat that as a blocker: ask the user for the Namespace name instead. It appears in the Cloud UI's own URL, so they can copy it without typing it out.
+
+   **Never source a Namespace, account, or resource identifier from shell history.** History is stale by construction — it is full of last quarter's accounts — and reading it to guess a deployment target produces confident, wrong answers. Take identifiers from the user or from an authenticated API call, and nowhere else.
 
    **Agree a resource-naming prefix in this same batch of questions, and propose a default so the user can accept without thinking about it.** Assume the account and the Namespace are shared — unprefixed names like `temporal-serverless-worker` collide with, or quietly shadow, another team's deployment. Naming is not a late cosmetic choice you can patch on the provider side: the deployment name, build ID, and Task Queue are compiled into the Worker binary, so changing them after step 3 means editing code, rebuilding, repackaging, and cleaning up whatever was already created under the old names. Once agreed, apply the prefix to everything you create on both sides — compute unit, roles, infrastructure stacks, log groups, deployment name, and Task Queue.
 
+   **The prefix you propose must be identifying** — derived from the user, their team, or the project. A generic word like `demo`, `test`, or `temporal` collides about as readily as no prefix at all, so never offer one as the safe choice; in a shared account, someone else's `demo-` deployment is exactly the thing you would collide with.
+
+   Offer exactly two options plus the free-text escape: the identifying prefix, and "no prefix" — some users genuinely own the account. Do not spend a second option on another prefix string; the choice that carries consequences is prefix versus none, and anything else the user wants belongs in free text. When you offer "no prefix," say what it risks in the same breath: unprefixed names can collide with or shadow an existing deployment, and that surfaces as another team's Worker behaving oddly rather than as an error you will see.
+
 2. **Confirm you can make the required changes — before making any.** Determine which credentials are available (for the compute provider and for Temporal) and confirm the active identity actually has permission to make the changes the task needs — creating or updating compute resources, creating roles, registering deployment versions. Verify *both* sides: the compute provider AND Temporal access. Do not run account-mutating commands and let them fail partway. **If access is missing or unconfirmed, stop and ask the user how they want to proceed** — extend their identity's permissions, have an administrator make the change and hand back the result, or generate the commands for the user to run under a privileged identity. Changing a user's cloud account is consequential; confirm authorization and the preferred method first. → `references/aws-lambda/iam.md` (exact permissions, AWS preflight) and `references/aws-lambda/setup.md` (Temporal connection preflight).
+
+   **Distinguish "not signed in" from "not permitted" — they have different fixes.** A failed preflight does not automatically mean the bottom row of the table below. Classify it first: an absent or expired credential is usually recoverable in this session in under a minute, while a caller that resolves but is denied a specific action is a real permissions problem. If credentials are merely missing or stale, **offer to run the login flow and continue** — surface the verification URL for the user to open, wait for it to complete, re-run the preflight, and proceed. Offer it; do not start an identity-provider login as a silent side effect of a preflight. And never collect credentials in the conversation: no interactive credential-configuration wizards, no asking the user to paste access keys, API keys, or session tokens. → `references/aws-lambda/iam.md` (credential recovery).
 
    Adapt to what is available — the skill is valuable at every level:
 
@@ -32,6 +95,10 @@ Follow these steps in order. Each step is provider-neutral; the concrete command
    | Authenticated | None | Deploy compute infrastructure; generate the Temporal commands for the user to run. |
    | None | Authenticated | Write Worker code and configs; generate compute/deploy commands for the user; run Temporal commands and verify WCI state. |
    | None | None | Write Worker code, deploy templates, permission policies, connection configs, packaging scripts; provide all commands with placeholder values. |
+
+   Drop to a lower row only after the login option has been offered and either declined or attempted and failed. When you do hand off a runbook, say plainly that the offer stands — if the user authenticates and comes back, take the work over rather than leaving them to run the steps by hand.
+
+   **Before the first account-mutating command, list what you are about to create — with final names — and get approval.** Name the target account and region, then every resource: compute unit, execution role, infrastructure stack, log group, deployment name, and Task Queue. Say plainly that they are live and billable. This is the mirror of the inventory in step 8, and it is worth more here than there: it makes the naming prefix concrete while changing it is still free, and the deployment name, build ID, and Task Queue become expensive to change once step 3 compiles them into the Worker. Skip it only when nothing will be created — a troubleshooting or inspection task.
 
 3. **Author the Worker.** *Install the SDK's serverless Worker package before writing any code* — it is often shipped separately from the main SDK, with its own version line, so having the base SDK installed does not mean it is importable. Then read the installed package's actual API surface and write against that; these are Public Preview APIs that drift between versions, and generating code from memory costs a build cycle. Every Workflow must declare a versioning behavior (`Pinned` or `AutoUpgrade`), per-Workflow or as a Worker-level default — code without it fails at runtime. → `references/sdk-configuration.md` (package, install, entry point, tuned defaults) and `references/aws-lambda/setup.md` (install commands, API-inspection recipes, handler shape).
 
@@ -43,13 +110,14 @@ Follow these steps in order. Each step is provider-neutral; the concrete command
 
 7. **Verify.** Start a Workflow on the Task Queue and confirm Temporal invokes the Worker — check the Workflow history in the Temporal UI and the compute provider's logs. If it does not progress, → `references/aws-lambda/diagnostics.md`.
 
-8. **Hand back an inventory.** Report the resources you created — compute unit and published build identifiers, roles, infrastructure stacks, region, deployment name and build ID — together with the teardown commands. These are live, billable resources whose names are only knowable from the run that created them, and reconstructing them later means scanning the user's account. → `references/aws-lambda/setup.md` (Teardown).
+8. **Hand back an inventory, and offer to tear it down.** Close with what now exists — compute unit and published build identifiers, roles, infrastructure stacks, region, deployment name and build ID — and say plainly that it is live and billable. These names are only knowable from the run that created them, and reconstructing them later means scanning the user's account. Then make teardown an offer the user can accept in a word, not a pointer to commands in a file. You still hold the inventory, the credentials, and the context — the user reading a runbook a day later holds none of it, and hits its ordering traps alone. Leave the commands behind either way, so the offer outlives the session. → `references/aws-lambda/setup.md` (Teardown).
 
 ## Working practices
 
 How to move through the workflow above. These are drawn from real deployments, where the failures were rarely conceptual — they came from acting on a recalled detail, or from chaining a step onto an unverified one.
 
 - **Read the current state instead of recalling it.** Check the installed package's API, the CLI's own `--help` for the flags you are about to pass, the compute unit's reported state, and the CLI version. Every one of these has drifted or surprised in practice: a Public Preview SDK whose fields moved, a CLI too old to have the serverless subcommand at all, a resource that reports success while still settling. Reading costs one command; guessing costs a deploy cycle and can leave half-built resources behind.
+- **Do not chain `cd` with commands that create or modify files.** A compound `cd <dir> && <write>` triggers a manual approval prompt no matter how the user's permissions are configured, so scaffolding a project this way asks for approval on every run. Use absolute paths, or the tool's own directory flag (`go -C <dir> …`), and rely on the shell's working directory persisting between calls — the `cd` buys nothing and costs a prompt. Keep the command count down for the same reason: one `go get` covering both packages beats two.
 - **Verify each step before building the next on top of it.** Compile the Worker before packaging it, confirm the package's target architecture before uploading, wait for the compute unit to be ready before publishing a build, and confirm the Task Queue is bound before shifting traffic. Deployment failures here surface far from their cause — an architecture or dependency mismatch appears only at first invocation, and a first-invocation failure appears as "the Worker is never invoked", several steps later.
 - **When something fails, read the actual error before changing anything.** Fetch the failure reason from the provider (deployment events, logs, status fields) and fix that. Do not retry the same command with variations, and do not start editing permissions or trust policies on the theory that the problem might be access — most first-invocation failures are not permission problems, and some failures are on Temporal's side and will reproduce no matter what you change.
 - **Treat the user's account as shared and pre-existing.** Assume other deployments, roles, and stacks are already there. Look before creating, extend rather than duplicate, and never delete or repurpose something you did not create without asking. When you do work around existing infrastructure — a different name, a reused role — say so explicitly in your summary rather than leaving it as a silent deviation.

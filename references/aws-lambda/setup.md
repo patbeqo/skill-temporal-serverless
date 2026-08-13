@@ -45,6 +45,21 @@ temporal --profile prod config set --prop api_key --value "<your-api-key>"
 ```
 <!-- docs/develop/environment-configuration.mdx:122-131 -->
 
+or configure an environment and pass `--env prod` (or set `TEMPORAL_ENV`):
+
+```bash
+temporal env set --env prod --key address --value "<namespace_id>.<account_id>.tmprl.cloud:7233"
+temporal env set --env prod --key namespace --value "<namespace_id>.<account_id>"
+temporal env set --env prod --key api-key --value "<your-api-key>"
+```
+
+**Do not assume which of the three a user has, and do not migrate them.** `--env` (YAML, `temporal env`) is the long-standing mechanism; `--profile` (TOML, `temporal config`) is newer and the CLI still marks it EXPERIMENTAL. Both are supported — work with whichever is already configured. Read the existing values rather than asking the user to re-enter them:
+
+```bash
+temporal env get --env prod          # --env mechanism
+temporal config get --prop address   # --profile mechanism
+```
+
 - For Temporal Cloud the Namespace is the fully-qualified `<namespace_id>.<account_id>`, not the bare name. <!-- docs/develop/environment-configuration.mdx:128-129 -->
 - Supplying an API key auto-enables TLS; no cert flags are needed for API-key auth. <!-- docs/develop/environment-configuration.mdx:70 -->
 - The `temporal ...` commands in Steps 4–6 assume this is configured. To create an API key, see `skill-temporal-ops`.
@@ -54,6 +69,32 @@ temporal --profile prod config set --prop api_key --value "<your-api-key>"
 ```bash
 temporal worker deployment list
 ```
+
+If this fails with an auth error, note first that this is a **frontend** call — it needs address, Namespace, and an API key. A Cloud CLI login does not provide any of them; the two planes are separate:
+
+| | Control plane (accounts, Namespaces, API keys) | Namespace frontend (Workflows, Worker Deployments) |
+|---|---|---|
+| Established CLI | `tcld login` — device code | `temporal ...` with address + namespace |
+| Newer CLI | `temporal cloud login` — browser OAuth, still pre-release | same |
+| Headless | `--api-key` / `TEMPORAL_CLOUD_API_KEY` | `TEMPORAL_API_KEY` |
+
+The two API-key variables are **different**: `TEMPORAL_CLOUD_API_KEY` authenticates control-plane calls, `TEMPORAL_API_KEY` authenticates the frontend and is the one the Worker needs. Do not set one expecting the other.
+
+**Go to the API key first.** It requires no CLI login, no browser handshake, and works on every account type:
+
+```bash
+export TEMPORAL_ADDRESS="<namespace_id>.<account_id>.tmprl.cloud:7233"
+export TEMPORAL_NAMESPACE="<namespace_id>.<account_id>"
+export TEMPORAL_API_KEY="<created in the Cloud UI>"
+```
+
+Have the user create the key in the Cloud UI, signing in however they normally do, and confirm the address against the endpoint shown on the Namespace page — some Namespaces have regional endpoints that do not follow the pattern above. Never ask them to paste the key into the conversation.
+
+**A Cloud CLI login is a convenience, not a prerequisite.** When it is available it saves asking: `temporal cloud namespace list` and `namespace get -n <ns>` return the fully-qualified name, endpoint, and region, and `temporal cloud apikey create-for-me` can mint the key — though that creates a long-lived credential in the user's account, so offer it and get explicit approval, never silently. Two CLIs provide this and neither is guaranteed present: check with `command -v tcld` and `temporal cloud --help` and prefer whichever the user already has configured.
+
+**When a Cloud CLI login fails, stop — do not debug it, retry it, or install the other CLI.** The common cause is an organization that federates Temporal Cloud through **IdP-initiated corporate SSO** (for example Microsoft Entra, where sign-in starts at the company app portal). The CLIs perform a service-provider-initiated flow that starts at Temporal and expects to drive the login, which such a tenant does not permit. No flag, plugin upgrade, or alternate CLI changes this. Fall back to the API key above.
+
+Do not proceed to Steps 4–6 on the assumption auth will work — re-run this command and confirm.
 
 ## Step 1: Write Worker code
 
@@ -89,7 +130,7 @@ Specifics worth confirming this way, because they differ by SDK and are easy to 
 
 - **Where the Task Queue lives.** In Go it is a direct field on the options object (`opts.TaskQueue`). In Python it goes through the worker-config mapping (`config.worker_config["task_queue"]`), and in TypeScript through worker options (`config.workerOptions.taskQueue`). Do not carry one shape over to another language.
 - **Where registration happens.** In Go the `Register*` methods hang off the same options object; Python and TypeScript pass Workflow and Activity collections into the worker config.
-- **You do not construct a client.** Connection details (address, namespace, API key) load automatically from environment variables and the optional TOML config file, so exported `TEMPORAL_*` variables flow straight through to the deployed function with no client code.
+- **You do not construct a client.** Connection details (address, namespace, API key) load automatically from the process environment, so `TEMPORAL_*` variables set on the function flow straight through with no client code. In a Lambda that means the `--environment` block at deploy time: no config file is bundled unless you put one there, and the operator's own CLI configuration never reaches the function (see "Operator CLI config does not reach the function" below).
 - **Worker Versioning is always on.** The run-worker entry point enables it, so the only remaining decision is `Pinned` vs `AutoUpgrade` per Workflow (or a Worker-level default).
 
 **Fastest path:** start from the language sample linked in Prerequisites — it has a working Worker, Workflow, and Activity already wired together. The handler examples below import the Workflow and Activity from separate modules (`my_workflows`, `my_activities`). When writing from scratch, create those modules with at least one registered Workflow (declaring a versioning behavior) and one Activity, and name the entry-point file to match the `--handler` you deploy (for example, `lambda_function.py` → `--handler lambda_function.lambda_handler`).
@@ -272,6 +313,16 @@ zip -r function.zip lib/ node_modules/ workflow-bundle.js
 ### Deploy the Lambda function
 
 **A freshly created execution role may not be assumable immediately.** `create-function` can fail with an assume-role / "cannot be assumed by Lambda" error because of IAM propagation delay. Wait a few seconds and retry; it is not a policy error, so do not start rewriting the trust policy.
+
+**Operator CLI config does not reach the function.** All three CLI mechanisms above — exported `TEMPORAL_*` variables, `--profile`, and `--env` — configure the `temporal` CLI on the operator's machine only. The function reads its own environment, set by the `--environment` block below (or a secret store). A user with a working `--env prod` or `--profile prod` still needs every value written into that block; nothing is inherited. Treat their CLI configuration as the *source* of the values, not a substitute for setting them.
+
+**Resolve the values before building the block, and check they are not empty.** The heredoc below expands shell variables, which hold values only under the env-var mechanism. Under `--env` or `--profile` they are unset, and an unset variable expands to an empty string: the JSON stays valid, `create-function` succeeds, and the function deploys with `"TEMPORAL_ADDRESS":""` — failing at first invocation with a connection error that looks nothing like its cause. Populate them from whichever mechanism the user actually has (`temporal env get --env prod`, `temporal config get --prop address`), then guard:
+
+```bash
+: "${TEMPORAL_ADDRESS:?resolve this before deploying}"
+: "${TEMPORAL_NAMESPACE:?resolve this before deploying}"
+: "${TEMPORAL_API_KEY:?resolve this before deploying}"
+```
 
 **Pass the API key through a file or shell variable, not inline in the shell history.** Building the `--environment` block inline puts the API key into shell history and into any command echo. Reference it from the environment and pass the block via a file instead:
 
@@ -520,22 +571,37 @@ If the Workflow does not progress or the Lambda is not invoked, see `diagnostics
 
 **Record what you create, as you create it.** These are live, billable AWS resources spread across three services plus Temporal Cloud, and their names are only knowable from the run that created them. Keep a running inventory — function name and published version numbers, execution role name, CloudFormation stack name and role name, region, deployment name and build ID — and hand it to the user at the end alongside the teardown commands. Reconstructing it later means scanning the account, which the skill otherwise tells you not to do.
 
-To remove a serverless Worker deployment (for example, after an evaluation), tear down in this order so nothing is left invoking or being invoked:
+To remove a serverless Worker deployment (for example, after an evaluation), tear down in this order so nothing is left invoking or being invoked.
 
-1. Delete the Worker Deployment Version. This stops its WCI (one WCI runs per version with a compute provider). If other versions exist, set another current first with `set-current-version`.
+**The Lambda function must go before the Worker Deployment Version, not after.** The intuitive order — Temporal first, so nothing is left invoking — deadlocks, because the version refuses to delete while pollers are active and the pollers *are* the still-running Lambda. Deleting the function is what drains them. Expect the Temporal side to be split across the sequence for this reason.
+
+1. Unset the current version. A Current version cannot be deleted, and a Worker Deployment with versions cannot be deleted either — so this deadlock has to be broken first. `--skip-drainage` does not help here; it waives the draining check, not the Current restriction.
    ```bash
-   temporal worker deployment delete-version --deployment-name my-app --build-id build-1
+   temporal worker deployment set-current-version \
+     --deployment-name my-app --unversioned --yes
    ```
-   The version must not be Current or Ramping and must have no active pollers; add `--skip-drainage` to ignore the draining restriction.
-2. Delete the CloudFormation stack that created the Temporal invocation role — **only if this deployment created it.** One invocation role can authorize several Worker Lambdas, so a pre-existing stack may still be in use by another deployment; in that case remove just this function's ARN from its `LambdaFunctionARNs` instead (see `iam.md`).
-   ```bash
-   aws cloudformation delete-stack --stack-name <STACK_NAME> --region <AWS_REGION>
-   ```
-3. Delete the Lambda function. This removes all published versions:
+   If other versions exist and should keep serving, set one of them current instead of `--unversioned`.
+2. Delete the Lambda function. This removes all published versions, and ends the invocation that is still polling:
    ```bash
    aws lambda delete-function --function-name my-temporal-worker
    ```
-4. If you created a dedicated execution role, delete it — **detach its managed policies first**, or `delete-role` fails with `DeleteConflict: Cannot delete entity, must detach all policies first`:
+3. Wait for the version to drain, then delete it. Poller registration is server-side and expires on a TTL after the Worker stops, so `delete-version` can still fail with active pollers for a while after the function is gone — and the poller list can read empty before drainage has actually completed. Poll for `DrainageStatus: drained` rather than retrying blind:
+   ```bash
+   temporal worker deployment describe-version \
+     --deployment-name my-app --build-id build-1
+   temporal worker deployment delete-version \
+     --deployment-name my-app --build-id build-1
+   ```
+4. Delete the Worker Deployment itself, once it has no versions left. This stops its WCI (one WCI runs per version with a compute provider); confirm the WCI has moved to `Completed`, and that any *other* deployment's WCI is still `Running`.
+   ```bash
+   temporal worker deployment delete --name my-app
+   ```
+   The deployment may still appear in `list` output immediately afterward — index lag, not a failed delete. Confirm with `describe`.
+5. Delete the CloudFormation stack that created the Temporal invocation role — **only if this deployment created it.** One invocation role can authorize several Worker Lambdas, so a pre-existing stack may still be in use by another deployment; in that case remove just this function's ARN from its `LambdaFunctionARNs` instead (see `iam.md`).
+   ```bash
+   aws cloudformation delete-stack --stack-name <STACK_NAME> --region <AWS_REGION>
+   ```
+6. If you created a dedicated execution role, delete it — **detach its managed policies first**, or `delete-role` fails with `DeleteConflict: Cannot delete entity, must detach all policies first`:
    ```bash
    ROLE=<EXECUTION_ROLE_NAME>
    aws iam list-attached-role-policies --role-name "$ROLE" \
@@ -544,8 +610,12 @@ To remove a serverless Worker deployment (for example, after an evaluation), tea
    aws iam delete-role --role-name "$ROLE"
    ```
    Skip this if the execution role predates your deployment or is shared with other functions.
-5. Delete the CloudWatch log group. **`delete-function` does not remove it** — the log group and its retained events survive the function and keep accruing storage charges:
+7. Delete the CloudWatch log group. **`delete-function` does not remove it** — the log group and its retained events survive the function and keep accruing storage charges:
    ```bash
    aws logs delete-log-group --log-group-name /aws/lambda/my-temporal-worker
    ```
-6. Revoke the Temporal Cloud API key if it was created only for this deployment (see `skill-temporal-ops`).
+8. Revoke the Temporal Cloud API key **last**, if it was created only for this deployment (see `skill-temporal-ops`) — it is the credential authenticating every Temporal command above it. Like `set-current-version`, `apikey delete` prompts for confirmation and, run non-interactively, exits without deleting anything; the exit code looks clean while the key is still live. Pass `--auto-confirm` and verify with `apikey list` rather than trusting the exit code.
+   ```bash
+   temporal cloud apikey delete --id <KEY_ID> --auto-confirm
+   temporal cloud apikey list
+   ```

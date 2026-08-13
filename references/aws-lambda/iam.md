@@ -46,6 +46,54 @@ aws iam simulate-principal-policy \
 
 For an assumed-role session, rewrite the ARN (`arn:aws:sts::…:assumed-role/Name/session`) to the underlying role ARN (`arn:aws:iam::…:role/Name`) for `simulate-principal-policy`.
 
+### When the preflight cannot authenticate
+
+`aws sts get-caller-identity` failing does not mean the user has no access — most often no profile is selected, or an SSO token has expired. Classify before concluding anything:
+
+| Error | Meaning | Action |
+|---|---|---|
+| `Unable to locate credentials` | Nothing configured or selected | Check for existing profiles before concluding there are none |
+| `ExpiredToken`, `The SSO session associated with this profile has expired` | Profile is fine, token is stale | Refresh it, below |
+| `InvalidClientTokenId`, `SignatureDoesNotMatch`, `UnrecognizedClientException` | Credentials exist but are invalid — stale static keys, a deleted user, or the wrong account | Do not retry; re-authenticate, or ask which profile is intended. Report the account you *did* resolve, if any |
+| `AccessDenied` on an action while `get-caller-identity` succeeds | Authenticated, insufficient permissions | Genuine permissions problem — see the operator table above |
+
+Look at what is already configured before asking the user for anything:
+
+```bash
+echo "AWS_PROFILE=${AWS_PROFILE:-<unset>}"
+aws configure list-profiles
+```
+
+Then pick the login command by what that turned up. These are two different commands, not aliases — do not substitute one for the other:
+
+**A profile already exists (token is just stale)** — refresh the IAM Identity Center token:
+
+```bash
+aws sso login --profile <profile> --no-browser
+```
+
+`--no-browser` prints the verification URL and user code instead of opening a browser. Auto-open is unreliable over SSH, containers, and remote sessions, and the user needs the URL in the conversation either way.
+
+**Nothing is configured at all** — `aws login` needs no prior setup, acquiring temporary credentials from a Management Console session plus a refresh token that the CLI renews automatically:
+
+```bash
+aws login
+```
+
+Two limits on it. AWS scopes this command to *local development*, so do not use it as the identity for a CI or production deployment — those need a configured profile or an assumed role. And it is recent enough that older CLIs do not have it: confirm with `aws login help` before offering it, and fall back to asking the user to run `aws configure sso` themselves if it is absent. Avoid its `--remote` flag in an agent shell — unlike `aws sso login --no-browser`, it prompts for an authorization code on stdin; on a remote host, prefer configuring an SSO profile and using `aws sso login --no-browser` instead.
+
+Either command blocks until the browser flow finishes, so run it in a background shell, surface the URL (and code, if any) to the user, and poll until credentials land:
+
+```bash
+aws sts get-caller-identity
+```
+
+Re-run the preflight above and continue the deployment.
+
+If the organization wraps credentials in its own tool (`aws-vault`, `granted`/`assume`, `saml2aws`), use that instead — ask which, rather than guessing.
+
+**Never run `aws configure`/`aws configure sso` interactively, and never ask the user to paste access keys or session tokens into the conversation** — the wizards block an agent shell on stdin, and pasted keys land in the transcript and shell history. If neither login command applies, ask the user to configure a profile or export credentials in their own shell, then tell you when to re-run the preflight.
+
 ## Execution role
 
 The Lambda execution role grants the function permission to run. It is trusted by `lambda.amazonaws.com` and must have at least the `AWSLambdaBasicExecutionRole` managed policy attached (which includes the CloudWatch Logs permissions the Worker needs). This is separate from the Temporal invocation role below. Pass its ARN as `--role` when you create the function (`setup.md`, Step 2). <!-- docs/production-deployment/worker-deployments/serverless-workers/aws-lambda.mdx:317 -->
