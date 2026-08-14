@@ -70,15 +70,23 @@ temporal config get --prop address   # --profile mechanism
 temporal worker deployment list
 ```
 
-If this fails with an auth error, note first that this is a **frontend** call — it needs address, Namespace, and an API key. A Cloud CLI login does not provide any of them; the two planes are separate:
+If this fails with an auth error, note first that this is a **frontend** call — it needs address, Namespace, and an API key. A control-plane login does not provide any of them; the two planes are separate:
 
 | | Control plane (accounts, Namespaces, API keys) | Namespace frontend (Workflows, Worker Deployments) |
 |---|---|---|
-| Established CLI | `tcld login` — device code | `temporal ...` with address + namespace |
-| Newer CLI | `temporal cloud login` — browser OAuth, still pre-release | same |
+| Interactive | `tcld login` | `temporal ...` with address + namespace |
 | Headless | `--api-key` / `TEMPORAL_CLOUD_API_KEY` | `TEMPORAL_API_KEY` |
 
-The two API-key variables are **different**: `TEMPORAL_CLOUD_API_KEY` authenticates control-plane calls, `TEMPORAL_API_KEY` authenticates the frontend and is the one the Worker needs. Do not set one expecting the other.
+**Use `tcld` for every Temporal Cloud control-plane operation** — accounts, Namespaces, API keys, users, service accounts. Do not use the unified CLI's `temporal cloud …` subcommands for them.
+
+**Worker Deployments and Workflows are not control-plane operations.** They live on the Namespace frontend and have no `tcld` equivalent: Steps 4–6 use `temporal worker deployment …`, authenticated with address, Namespace, and `TEMPORAL_API_KEY`.
+
+The two API-key variables are **different**: `TEMPORAL_CLOUD_API_KEY` authenticates `tcld`, `TEMPORAL_API_KEY` authenticates the frontend and is the one the Worker needs. Do not set one expecting the other.
+
+Two `tcld` mechanics worth knowing before you run it in an agent shell:
+
+- `tcld login --disable-pop-up` prints the URL instead of opening a browser. Auto-open is unreliable over SSH, in containers, and in remote sessions, and the user needs the URL in the conversation either way.
+- `tcld` prompts for confirmation before mutating operations. Non-interactively, pass the global `--auto_confirm` (note the underscore) or set `AUTO_CONFIRM=true`, then read the resulting state back — without it the command exits clean having changed nothing.
 
 **Go to the API key first.** It requires no CLI login, no browser handshake, and works on every account type:
 
@@ -90,9 +98,19 @@ export TEMPORAL_API_KEY="<created in the Cloud UI>"
 
 Have the user create the key in the Cloud UI, signing in however they normally do, and confirm the address against the endpoint shown on the Namespace page — some Namespaces have regional endpoints that do not follow the pattern above. Never ask them to paste the key into the conversation.
 
-**A Cloud CLI login is a convenience, not a prerequisite.** When it is available it saves asking: `temporal cloud namespace list` and `namespace get -n <ns>` return the fully-qualified name, endpoint, and region, and `temporal cloud apikey create-for-me` can mint the key — though that creates a long-lived credential in the user's account, so offer it and get explicit approval, never silently. Two CLIs provide this and neither is guaranteed present: check with `command -v tcld` and `temporal cloud --help` and prefer whichever the user already has configured.
+**A control-plane login is a convenience, not a prerequisite.** When it is available it saves asking:
 
-**When a Cloud CLI login fails, stop — do not debug it, retry it, or install the other CLI.** The common cause is an organization that federates Temporal Cloud through **IdP-initiated corporate SSO** (for example Microsoft Entra, where sign-in starts at the company app portal). The CLIs perform a service-provider-initiated flow that starts at Temporal and expects to drive the login, which such a tenant does not permit. No flag, plugin upgrade, or alternate CLI changes this. Fall back to the API key above.
+```bash
+tcld namespace list             # full Namespace objects — every name with its region and endpoint
+tcld namespace get -n <ns>      # one Namespace
+tcld apikey create --name <name> --duration <d>
+```
+
+`apikey create` mints a key for the calling user and creates a long-lived credential in their account — offer it and get explicit approval, never silently. `tcld` is not guaranteed present: check `command -v tcld`, and read `tcld <group> --help` for the flags you are about to pass.
+
+**When a control-plane login fails, stop — do not debug it, retry it, or install another CLI.** Some accounts cannot complete a `tcld` login at all, and no flag, plugin upgrade, or alternate CLI changes that. Retrying burns turns without converging, and the browser path below reaches the same end state anyway.
+
+**Then put the choice to the user rather than deciding for them:** fix the CLI, or work in the browser while you give the instructions. Only the control-plane steps move — the frontend work needs address, Namespace, and an API key, and no control-plane login at all, so it continues either way. In the Cloud UI, the control-plane steps are Namespace names, regions, and endpoints, and API key creation; the frontend steps are creating the Worker Deployment Version with its compute provider, and setting a version current, which the UI does automatically and the CLI does not. Where the login cannot complete, say so plainly instead of sending the user back to retry it.
 
 Do not proceed to Steps 4–6 on the assumption auth will work — re-run this command and confirm.
 
@@ -569,7 +587,7 @@ If the Workflow does not progress or the Lambda is not invoked, see `diagnostics
 
 ## Teardown
 
-**Record what you create, as you create it.** These are live, billable AWS resources spread across three services plus Temporal Cloud, and their names are only knowable from the run that created them. Keep a running inventory — function name and published version numbers, execution role name, CloudFormation stack name and role name, region, deployment name and build ID — and hand it to the user at the end alongside the teardown commands. Reconstructing it later means scanning the account, which the skill otherwise tells you not to do.
+**Record what you create, as you create it.** These are live, billable AWS resources spread across three services plus Temporal Cloud, and their names are only knowable from the run that created them. Keep a running inventory — function name and published version numbers, execution role name, CloudFormation stack name and role name, region, deployment name and build ID — and hand it to the user at the end. Deliver the inventory before offering teardown, and do not write a teardown script until they ask for one. Reconstructing the inventory later means scanning the account, which the skill otherwise tells you not to do.
 
 To remove a serverless Worker deployment (for example, after an evaluation), tear down in this order so nothing is left invoking or being invoked.
 
@@ -614,8 +632,8 @@ To remove a serverless Worker deployment (for example, after an evaluation), tea
    ```bash
    aws logs delete-log-group --log-group-name /aws/lambda/my-temporal-worker
    ```
-8. Revoke the Temporal Cloud API key **last**, if it was created only for this deployment (see `skill-temporal-ops`) — it is the credential authenticating every Temporal command above it. Like `set-current-version`, `apikey delete` prompts for confirmation and, run non-interactively, exits without deleting anything; the exit code looks clean while the key is still live. Pass `--auto-confirm` and verify with `apikey list` rather than trusting the exit code.
+8. Revoke the Temporal Cloud API key **last**, if it was created only for this deployment (see `skill-temporal-ops`) — it is the credential authenticating every Temporal command above it. Like `set-current-version`, `tcld apikey delete` prompts for confirmation and, run non-interactively, exits without deleting anything; the exit code looks clean while the key is still live. Pass `--auto_confirm` and confirm from the `list` output that the key is gone rather than trusting the exit code.
    ```bash
-   temporal cloud apikey delete --id <KEY_ID> --auto-confirm
-   temporal cloud apikey list
+   tcld apikey delete --id <KEY_ID> --auto_confirm
+   tcld apikey list
    ```
