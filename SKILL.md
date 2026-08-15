@@ -98,7 +98,7 @@ Where the harness has a todo list, use it *in addition to* the printed checklist
 
    This also settles the compute-provider answer, since a Namespace can only be served by compute on its own cloud provider — so a mismatch is caught here rather than at connection time, several steps later.
 
-   **Degrade gracefully — this call fails on some accounts.** Control-plane commands do not authenticate everywhere, and on some accounts no amount of retrying changes that (see `references/<provider>/setup.md`). This is never a blocker, because the user is already signed in to the Cloud UI, which lists their Namespaces with regions. Ask them for the name from there — it appears in the Cloud UI's own URL, so they can copy it without typing it out.
+   **Degrade gracefully if `tcld` is not authenticated.** Ask the user for the Namespace name rather than stopping to fix the login — they can copy it from the Cloud UI, where it appears on the Namespace page and in the URL. Ask for its region in the same batch of questions: the name alone does not tell you the provider, and a mismatch missed here surfaces at connection time instead.
 
    **Never source a Namespace, account, or resource identifier from shell history.** History is stale by construction — it is full of last quarter's accounts — and reading it to guess a deployment target produces confident, wrong answers. Take identifiers from the user or from an authenticated API call, and nowhere else.
 
@@ -117,7 +117,7 @@ Where the harness has a todo list, use it *in addition to* the printed checklist
    - **Fix the CLI** — you run the login flow, surface the verification URL for them to open, wait for it to complete, re-run the preflight, and continue with full automation.
    - **Work in the browser** — the user makes the changes in the Cloud UI and their cloud provider's console while you give the instructions step by step, naming the exact path for each one, and they report the result back.
 
-   Both paths reach the same end state, so present them as equals rather than as a preference and a fallback. Every control-plane step in this workflow exists in the Cloud UI: reading Namespace names, regions, and endpoints; creating an API key; creating the Worker Deployment Version with its compute provider; and setting a version current, which the UI does automatically and the CLI does not. Ask once, then commit to the answer — do not re-offer the login at every subsequent step, and never start an identity-provider login as a silent side effect of a preflight.
+   Both paths reach the same end state, so present them as equals rather than as a preference and a fallback — every control-plane step in this workflow exists in the Cloud UI (see `references/<provider>/setup.md`). Ask once, then commit to the answer — do not re-offer the login at every subsequent step, and never start an identity-provider login as a silent side effect of a preflight.
 
    Adapt to what is available — the skill is valuable at every level:
 
@@ -128,7 +128,7 @@ Where the harness has a todo list, use it *in addition to* the printed checklist
    | None | Authenticated | Write Worker code and configs; walk the user through the compute steps in their provider's console, or generate the deploy commands; run Temporal commands and verify WCI state. |
    | None | None | Write Worker code, deploy templates, permission policies, connection configs, packaging scripts; provide all commands with placeholder values. |
 
-   **"None" means no authenticated CLI, not no access** — the user still has the Cloud UI and their provider's console in a browser. Drop to a lower row only after the choice above has been put to the user and the browser path chosen, or the login attempted and failed. When you do hand off a runbook, say plainly that the offer stands — if the user authenticates and comes back, take the work over rather than leaving them to run the steps by hand.
+   **Do not self-select a row.** Drop to a lower one only after the choice above has been put to the user and the browser path chosen, or the login attempted and failed. When you hand off a runbook, say the offer stands — if the user authenticates and comes back, take the work over rather than leaving them to run the steps by hand.
 
    **Before the first account-mutating command, list what you are about to create — with final names — and get approval.** Name the target account and region, then every resource: compute unit, execution role, infrastructure stack, log group, deployment name, and Task Queue. Say plainly that they are live and billable. This is the mirror of the inventory in step 8, and it is worth more here than there: it makes the naming prefix concrete while changing it is still free, and the deployment name, build ID, and Task Queue become expensive to change once step 3 compiles them into the Worker. Skip it only when nothing will be created — a troubleshooting or inspection task.
 
