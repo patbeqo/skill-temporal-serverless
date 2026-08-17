@@ -6,7 +6,7 @@
 
 **AWS Lambda — Public Preview since July 30, 2026.** Open to all Temporal Cloud customers. There is no access request, no support ticket, and no manual toggle to enable: a customer selects "AWS Lambda (Public Preview)" as the compute provider in the UI and sets up their Worker Deployment directly. Never route a user to support to "get access" for Lambda.
 
-**GCP Cloud Run — still Pre-release and gated.** Access requires a manual request, the same way Lambda worked before July 30, 2026. This skill does not cover Cloud Run deployment; do not adapt the Lambda material to it.
+AWS Lambda is the only compute provider this skill supports. Do not adapt the Lambda material to any other provider.
 
 Public Preview is not General Availability. APIs are still evolving and may be subject to backwards-incompatible changes between versions — pin SDK and CLI versions for anything long-lived, and read the installed package's real API surface rather than writing from memory.
 

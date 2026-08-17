@@ -7,7 +7,7 @@ A skill for coding agents to use when deploying and operating [Temporal](https:/
 > We would love to hear your feedback - positive or negative - over in the [Community Slack](https://t.mp/slack), in the [#topic-ai channel](https://temporalio.slack.com/archives/C0818FQPYKY)
 
 > [!NOTE]
-> Serverless Workers on AWS Lambda are in Public Preview and open to all Temporal Cloud customers — no access request needed. Other compute providers (GCP Cloud Run) are still Pre-release and gated, and are not covered by this Skill.
+> Serverless Workers on AWS Lambda are in Public Preview and open to all Temporal Cloud customers — no access request needed. Other compute providers are not supported by this Skill.
 
 ## Installation
 
