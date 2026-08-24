@@ -233,3 +233,5 @@ Most questions need 2–3 reference files.
 - **Traditional Worker tuning** (slot suppliers, tuners, poller autoscaling, resource-based tuning): see `skill-temporal-workertuning`.
 - **Temporal Cloud administration** (Namespaces, users, certificates, billing): see `skill-temporal-ops`.
 - **CLI command reference** (beyond the serverless-specific flags): see `skill-temporal-cli`.
+
+Release-test marker 2026-08-24 mixed plugin-release.
