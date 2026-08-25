@@ -5,7 +5,7 @@ description: 'Deploy and operate Temporal Workers on serverless compute (AWS Lam
   worker", "Temporal serverless", "Worker Controller Instance", "WCI", "deploy Temporal
   worker on Lambda", "Lambda packaging", "Lambda timeout", "WCI inspection", "CloudFormation
   Temporal".'
-version: 0.3.0
+version: 0.4.0
 ---
 
 # Skill: temporal-serverless
