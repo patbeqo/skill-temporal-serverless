@@ -132,3 +132,5 @@ Feedback is welcome in the [Temporal Community Slack](https://t.mp/slack), in th
 <!-- SYNC-PROBE-20260825-r3 README should not overlay -->
 
 <!-- SYNC-PROBE-20260825-r6 README should not overlay -->
+
+<!-- SYNC-PROBE-20260825-r8 README should not overlay -->
