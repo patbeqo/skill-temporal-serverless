@@ -235,3 +235,5 @@ Most questions need 2–3 reference files.
 - **CLI command reference** (beyond the serverless-specific flags): see `skill-temporal-cli`.
 
 Release-test marker 2026-08-24 mixed plugin-release.
+
+<!-- SYNC-PROBE-20260825-r3 serverless SKILL.md -->
