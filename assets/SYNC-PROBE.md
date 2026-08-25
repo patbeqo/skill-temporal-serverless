@@ -1,1 +1,1 @@
-SYNC-PROBE-20260825-r3 serverless assets
+SYNC-PROBE-20260825-r6 serverless assets

@@ -130,3 +130,5 @@ Nothing is created before you approve the resource list. Troubleshooting and ins
 Feedback is welcome in the [Temporal Community Slack](https://t.mp/slack), in the [`#topic-ai` channel](https://temporalio.slack.com/archives/C0818FQPYKY), or through [GitHub issues](https://github.com/temporalio/skill-temporal-serverless/issues).
 
 <!-- SYNC-PROBE-20260825-r3 README should not overlay -->
+
+<!-- SYNC-PROBE-20260825-r6 README should not overlay -->

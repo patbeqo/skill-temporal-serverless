@@ -237,3 +237,5 @@ Most questions need 2–3 reference files.
 Release-test marker 2026-08-24 mixed plugin-release.
 
 <!-- SYNC-PROBE-20260825-r3 serverless SKILL.md -->
+
+<!-- SYNC-PROBE-20260825-r6 serverless SKILL.md -->
